@@ -1,0 +1,12 @@
+# Terraform 파일
+.terraform/
+.terraform.lock.hcl
+terraform.tfstate
+terraform.tfstate.backup
+*.tfvars
+!terraform.tfvars.example
+
+# 민감한 정보가 포함된 파일은 Git에 커밋하지 않음
+# terraform.tfvars는 실제 값이 들어있으므로 제외
+# 대신 terraform.tfvars.example을 사용하세요
+

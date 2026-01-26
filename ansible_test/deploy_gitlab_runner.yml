@@ -1,0 +1,28 @@
+---
+# Play: GitLab Runner 설치 (gitlab_runner 그룹 VM 대상)
+- name: Deploy GitLab Runner
+  hosts: gitlab_runner
+  become: yes
+
+  tasks:
+    - name: 1. Install prerequisites (필수 패키지 설치)
+      apt:
+        name:
+          - curl          # 패키지 다운로드용
+          - ca-certificates  # SSL 인증서 검증용
+          - gnupg         # 패키지 저장소 GPG 키 검증용 (필수)
+        state: present
+        update_cache: yes
+
+    - name: 2. Add GitLab Runner package repository (Runner 저장소 추가)
+      shell: |
+        curl -L "https://packages.gitlab.com/install/repositories/runner/gitlab-runner/script.deb.sh" | sudo bash
+      args:
+        creates: /etc/apt/sources.list.d/runner_gitlab-runner.list
+
+    - name: 3. Install GitLab Runner (Runner 설치)
+      apt:
+        name: gitlab-runner
+        state: present
+        update_cache: yes
+
