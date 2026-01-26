@@ -1,0 +1,211 @@
+---
+# Ansible Playbook
+#
+# 이 Playbook은 Terraform으로 생성된 인프라에 대한 추가 설정을 수행합니다.
+# 프론트엔드에서 선택한 패키지와 역할을 설치합니다.
+#
+# 실행 방법:
+#   ansible-playbook -i inventory.yml playbook.yml -e '{"packages_to_install": ["curl", "git"], "roles_to_apply": ["docker"]}'
+
+- name: Infrastructure Configuration Playbook
+  hosts: all
+  become: yes
+  gather_facts: yes
+  
+  vars:
+    # 프론트엔드에서 전달받은 변수
+    packages_to_install: "{{ packages_to_install | default([]) }}"
+    roles_to_apply: "{{ roles_to_apply | default([]) }}"
+  
+  tasks:
+    - name: Display host information
+      debug:
+        msg: "Configuring host {{ inventory_hostname }}"
+    
+    # 패키지 캐시 업데이트
+    - name: Update package cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+      ignore_errors: yes
+    
+    - name: Update package cache (RedHat/CentOS)
+      yum:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+      ignore_errors: yes
+    
+    # 선택한 패키지 설치
+    - name: Install selected packages
+      package:
+        name: "{{ packages_to_install }}"
+        state: present
+      when: packages_to_install | length > 0
+      ignore_errors: yes
+    
+    # 특수 패키지 처리 (Docker, Node.js 등)
+    - name: Install Docker (Debian/Ubuntu)
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+      when: 
+        - ansible_os_family == "Debian"
+        - "'docker' in packages_to_install or 'docker-compose' in packages_to_install"
+      ignore_errors: yes
+    
+    - name: Install Docker (RedHat/CentOS)
+      yum:
+        name:
+          - docker
+          - docker-compose
+        state: present
+      when: 
+        - ansible_os_family == "RedHat"
+        - "'docker' in packages_to_install or 'docker-compose' in packages_to_install"
+      ignore_errors: yes
+    
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      when: "'docker' in packages_to_install or 'docker-compose' in packages_to_install"
+      ignore_errors: yes
+    
+    # Node.js 설치 (특수 처리)
+    - name: Install Node.js via NodeSource (Debian/Ubuntu)
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+      when: 
+        - ansible_os_family == "Debian"
+        - "'nodejs' in packages_to_install"
+      ignore_errors: yes
+    
+    # Nginx 설치 및 설정
+    - name: Install and configure Nginx
+      block:
+        - name: Install Nginx
+          package:
+            name: nginx
+            state: present
+        
+        - name: Start and enable Nginx
+          systemd:
+            name: nginx
+            state: started
+            enabled: yes
+      when: "'nginx' in packages_to_install"
+      ignore_errors: yes
+    
+    # PostgreSQL 설치
+    - name: Install PostgreSQL (Debian/Ubuntu)
+      apt:
+        name: postgresql
+        state: present
+      when: 
+        - ansible_os_family == "Debian"
+        - "'postgresql' in packages_to_install"
+      ignore_errors: yes
+    
+    # Redis 설치
+    - name: Install Redis
+      package:
+        name: redis-server
+        state: present
+      when: "'redis' in packages_to_install"
+      ignore_errors: yes
+    
+    # Certbot 설치
+    - name: Install Certbot
+      package:
+        name: certbot
+        state: present
+      when: "'certbot' in packages_to_install"
+      ignore_errors: yes
+    
+    # Fail2ban 설치 및 설정
+    - name: Install and configure Fail2ban
+      block:
+        - name: Install Fail2ban
+          package:
+            name: fail2ban
+            state: present
+        
+        - name: Start and enable Fail2ban
+          systemd:
+            name: fail2ban
+            state: started
+            enabled: yes
+      when: "'fail2ban' in packages_to_install"
+      ignore_errors: yes
+    
+    # Ansible 역할 적용 (역할이 정의되어 있는 경우)
+    - name: Apply Ansible roles
+      debug:
+        msg: "Roles to apply: {{ roles_to_apply }}"
+      when: roles_to_apply | length > 0
+    
+    # 역할별 작업 (향후 확장 가능)
+    - name: Docker role setup
+      block:
+        - name: Ensure Docker is installed
+          package:
+            name: docker.io
+            state: present
+          when: ansible_os_family == "Debian"
+        
+        - name: Start Docker service
+          systemd:
+            name: docker
+            state: started
+            enabled: yes
+      when: "'docker' in roles_to_apply"
+      ignore_errors: yes
+    
+    - name: Nginx role setup
+      block:
+        - name: Install Nginx
+          package:
+            name: nginx
+            state: present
+        
+        - name: Start and enable Nginx
+          systemd:
+            name: nginx
+            state: started
+            enabled: yes
+      when: "'nginx' in roles_to_apply"
+      ignore_errors: yes
+    
+    - name: SSL/TLS setup role
+      block:
+        - name: Install Certbot
+          package:
+            name: certbot
+            state: present
+      when: "'ssl' in roles_to_apply"
+      ignore_errors: yes
+    
+    - name: Firewall configuration role
+      block:
+        - name: Install UFW (Debian/Ubuntu)
+          apt:
+            name: ufw
+            state: present
+          when: ansible_os_family == "Debian"
+        
+        - name: Install firewalld (RedHat/CentOS)
+          yum:
+            name: firewalld
+            state: present
+          when: ansible_os_family == "RedHat"
+      when: "'firewall' in roles_to_apply"
+      ignore_errors: yes
+    
+    - name: Playbook execution completed
+      debug:
+        msg: "Playbook execution completed successfully. Installed packages: {{ packages_to_install }}, Applied roles: {{ roles_to_apply }}"
