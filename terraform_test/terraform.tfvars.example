@@ -1,0 +1,51 @@
+# Terraform 변수 값 예제 파일
+# 이 파일을 복사하여 terraform.tfvars로 만들고 실제 값으로 채워주세요.
+# terraform.tfvars는 .gitignore에 포함되어 Git에 커밋되지 않습니다.
+
+# ============================================
+# Proxmox 접속 정보
+# ============================================
+proxmox_api_url     = "https://192.168.2.11:8006/api2/json"
+proxmox_token_id     = "root@pam!terraform-admin"
+proxmox_token_secret = "YOUR_TOKEN_SECRET_HERE"
+
+# ============================================
+# 공통 설정 (모든 VM에 공통으로 적용)
+# ============================================
+common_settings = {
+  template       = "ubuntu-templete"
+  target_node    = "yoonserver3"      # Proxmox 노드 이름
+  disk_storage   = "server3-storage"
+  network_bridge = "vmbr0"
+  nameserver     = "192.168.2.1"
+  gateway        = "192.168.2.1"
+  cpu_sockets    = 1
+  cpu_type       = "host"
+  clone_wait     = 10
+  ci_wait        = 30
+  boot_order     = "order=scsi0"
+}
+
+# ============================================
+# VM 목록 (여기서 VM 추가/삭제/수정)
+# ============================================
+vms = {
+  # 첫 번째 VM
+  "gitlab" = {
+    name      = "gitlab"
+    cores     = 4
+    memory    = 16384  # 16GB
+    disk_size = 100
+    ip        = "192.168.2.98"
+  }
+
+  # 두 번째 VM
+  "gitlab2" = {
+    name      = "gitlab2"
+    cores     = 4
+    memory    = 8192   # 8GB
+    disk_size = 50
+    ip        = "192.168.2.97"
+  }
+}
+

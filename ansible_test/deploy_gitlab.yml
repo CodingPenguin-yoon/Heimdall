@@ -1,0 +1,10 @@
+---
+# 통합 Playbook: GitLab 서버와 Runner 모두 배포
+# 사용법:
+#   ansible-playbook -i inventory.ini deploy_gitlab.yml
+# 또는 개별 실행:
+#   ansible-playbook -i inventory.ini deploy_gitlab_server.yml
+#   ansible-playbook -i inventory.ini deploy_gitlab_runner.yml
+
+- import_playbook: deploy_gitlab_server.yml
+- import_playbook: deploy_gitlab_runner.yml
