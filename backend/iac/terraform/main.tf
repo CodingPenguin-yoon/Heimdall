@@ -70,7 +70,7 @@ resource "proxmox_vm_qemu" "instance" {
   
   # VM 설정
   agent    = 1
-  os_type  = "cloud-init"
+  os_type  = var.template_id != "" ? "cloud-init" : (var.iso_file != "" ? "l26" : "cloud-init")
   cores    = var.cpu_cores
   sockets  = 1
   cpu      = "host"
@@ -85,6 +85,12 @@ resource "proxmox_vm_qemu" "instance" {
     size    = "${var.disk_size_gb}G"
   }
   
+  # 템플릿 없이 VM 생성 시 ISO 이미지 사용
+  # ISO가 있으면 CD-ROM으로 마운트
+  # 주의: Proxmox provider는 cdrom을 별도 블록으로 지원하지 않으므로,
+  # ISO는 수동으로 마운트하거나 preseed/kickstart로 자동 설치 필요
+  # 또는 Cloud-init 이미지를 사용하는 것을 권장
+  
   # 네트워크 설정 (여러 네트워크 지원)
   dynamic "network" {
     for_each = length(var.network_ids) > 0 ? var.network_ids : ["vmbr0"]
@@ -94,8 +100,18 @@ resource "proxmox_vm_qemu" "instance" {
     }
   }
   
-  # Cloud-init 설정 (IP 자동 할당을 위해)
-  ipconfig0 = "ip=dhcp"
+  # Cloud-init 설정
+  # 템플릿이 있으면: IP 자동 할당
+  # 템플릿이 없고 ISO가 있으면: 부팅 순서 설정 (ISO 우선)
+  ipconfig0 = var.template_id != "" || var.iso_file == "" ? "ip=dhcp" : null
+  
+  # 템플릿 없이 ISO로 생성 시 부팅 순서 설정
+  bootdisk = var.template_id == "" && var.iso_file != "" ? "scsi0" : null
+  
+  # Cloud-init user-data (SSH 키 자동 주입 및 OS 설정용)
+  # 템플릿이 없거나 ISO를 사용하는 경우 Cloud-init으로 SSH 키 자동 주입
+  # cicustom 형식: "user=<base64-encoded-user-data>"
+  cicustom = var.cloudinit_user_data != "" ? "user=${var.cloudinit_user_data}" : null
   
   lifecycle {
     ignore_changes = [

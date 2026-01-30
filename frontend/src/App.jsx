@@ -1,14 +1,18 @@
 import { useState } from 'react'
+import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import CreateInstanceWizard from './components/CreateInstanceWizard'
 import ControlCenter from './components/ControlCenter'
 import InstanceList from './components/InstanceList'
+import MonitoringDashboard from './components/MonitoringDashboard'
 import StatusPanel from './components/StatusPanel'
 import LogViewer from './components/LogViewer'
-import { Server, List, Plus } from 'lucide-react'
+import { Server, List, Plus, Activity } from 'lucide-react'
 import { deployInfrastructure, checkStatus, getLogs } from './services/api'
 
 function App() {
-  const [activeTab, setActiveTab] = useState('create') // 'list' or 'create' - 기본값을 'create'로 설정하여 첫 화면에서 서버 선택 가능
+  const navigate = useNavigate()
+  const location = useLocation()
+  const activeTab = location.pathname === '/' ? 'create' : location.pathname.replace('/', '')
   const [deployConfig, setDeployConfig] = useState({
     selectedServerId: '',
     selectedTemplateId: '',
@@ -110,6 +114,7 @@ function App() {
       const response = await deployInfrastructure({
         server_id: deployConfig.selectedServerId,
         template_id: deployConfig.selectedTemplateId || undefined,
+        iso_image_id: deployConfig.selectedISOImageId || undefined,
         cpu_cores: deployConfig.cpuCores ? parseInt(deployConfig.cpuCores) : undefined,
         memory_gb: deployConfig.memory ? parseInt(deployConfig.memory) : undefined,
         storage_id: deployConfig.selectedStorageId,
@@ -147,62 +152,100 @@ function App() {
         </div>
       </header>
 
-      {/* Main Content */}
-      <main className="container mx-auto px-8 py-8">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          {/* Left Column */}
-          <div className="space-y-6">
-            {/* Tabs */}
-            <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
-              <div className="flex border-b border-gray-200">
-                <button
-                  onClick={() => setActiveTab('list')}
-                  className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
-                    activeTab === 'list'
-                      ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
-                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                  }`}
-                >
-                  <List className="w-5 h-5" />
-                  Instance List
-                </button>
-                <button
-                  onClick={() => setActiveTab('create')}
-                  className={`flex-1 flex items-center justify-center gap-2 px-6 py-4 font-medium transition-colors ${
-                    activeTab === 'create'
-                      ? 'text-blue-600 border-b-2 border-blue-600 bg-blue-50'
-                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
-                  }`}
-                >
-                  <Plus className="w-5 h-5" />
-                  Create Instance
-                </button>
-              </div>
-
-              {/* Tab Content */}
-              <div className="p-6">
-                {activeTab === 'list' ? (
-                  <InstanceList
-                    onLogsUpdate={setLogs}
-                    onStatusChange={setStatus}
-                  />
-                ) : (
-                  <CreateInstanceWizard
-                    config={deployConfig}
-                    onConfigChange={setDeployConfig}
-                    onDeploy={handleDeploy}
-                  />
-                )}
-              </div>
-            </div>
-          </div>
-
-          {/* Right Column */}
-          <div className="space-y-6">
-            <StatusPanel status={status} />
-            <LogViewer logs={logs} />
+      {/* Tabs Navigation */}
+      <div className="bg-white border-b border-gray-200 shadow-sm">
+        <div className="container mx-auto px-8">
+          <div className="flex">
+            <button
+              onClick={() => navigate('/list')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'list'
+                  ? 'text-blue-600 border-blue-600 bg-blue-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <List className="w-5 h-5" />
+              Instance List
+            </button>
+            <button
+              onClick={() => navigate('/')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'create' || location.pathname === '/'
+                  ? 'text-blue-600 border-blue-600 bg-blue-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <Plus className="w-5 h-5" />
+              Create Instance
+            </button>
+            <button
+              onClick={() => navigate('/monitoring')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'monitoring'
+                  ? 'text-blue-600 border-blue-600 bg-blue-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <Activity className="w-5 h-5" />
+              Monitoring
+            </button>
           </div>
         </div>
+      </div>
+
+      {/* Main Content */}
+      <main className="container mx-auto px-8 py-8">
+        <Routes>
+          {/* Instance List Route */}
+          <Route
+            path="/list"
+            element={
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+                <InstanceList
+                  onLogsUpdate={setLogs}
+                  onStatusChange={setStatus}
+                />
+              </div>
+            }
+          />
+          
+          {/* Monitoring Dashboard Route */}
+          <Route
+            path="/monitoring"
+            element={
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+                <MonitoringDashboard />
+              </div>
+            }
+          />
+          
+          {/* Create Instance Route (Default) */}
+          <Route
+            path="/"
+            element={
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                {/* Left Column */}
+                <div className="space-y-6">
+                  <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+                    <div className="p-6">
+                      <CreateInstanceWizard
+                        config={deployConfig}
+                        onConfigChange={setDeployConfig}
+                        onDeploy={handleDeploy}
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                {/* Right Column */}
+                <div className="space-y-6">
+                  <StatusPanel status={status} />
+                  <LogViewer logs={logs} />
+                </div>
+              </div>
+            }
+          />
+        </Routes>
       </main>
     </div>
   )

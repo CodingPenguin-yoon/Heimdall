@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { Server, Cpu, Network, ChevronRight, CheckCircle2, Loader2, HardDrive, Package } from 'lucide-react'
-import { getServers, getTemplates, getServerStorage, getServerNetworks } from '../services/api'
+import { getServers, getTemplates, getServerStorage, getServerNetworks, getServerISOImages } from '../services/api'
 
 const STEPS = [
   { id: 1, name: 'Server & Template', icon: Server },
@@ -13,9 +13,11 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   const [currentStep, setCurrentStep] = useState(1)
   const [servers, setServers] = useState([])
   const [templates, setTemplates] = useState([])
+  const [isoImages, setIsoImages] = useState([])
   const [storages, setStorages] = useState([])
   const [networks, setNetworks] = useState([])
   const [loading, setLoading] = useState(false)
+  const [vmCreationMethod, setVmCreationMethod] = useState('template') // 'template' or 'iso'
 
   // 서버 목록 로드
   useEffect(() => {
@@ -47,6 +49,25 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     }
     fetchTemplates()
   }, [])
+
+  // ISO 이미지 목록 로드 (서버 선택 시)
+  useEffect(() => {
+    if (config.selectedServerId && vmCreationMethod === 'iso') {
+      const fetchISOImages = async () => {
+        try {
+          setLoading(true)
+          const response = await getServerISOImages(config.selectedServerId)
+          setIsoImages(response.data?.iso_images || response.data || [])
+        } catch (error) {
+          console.error('Failed to fetch ISO images:', error)
+          setIsoImages([])
+        } finally {
+          setLoading(false)
+        }
+      }
+      fetchISOImages()
+    }
+  }, [config.selectedServerId, vmCreationMethod])
 
   // 서버 선택 시 스토리지 로드
   useEffect(() => {
@@ -114,6 +135,24 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     onConfigChange((prev) => ({
       ...prev,
       selectedTemplateId: templateId,
+      selectedISOImageId: '', // 템플릿 선택 시 ISO 초기화
+    }))
+  }
+
+  const handleISOSelect = (isoId) => {
+    onConfigChange((prev) => ({
+      ...prev,
+      selectedISOImageId: isoId,
+      selectedTemplateId: '', // ISO 선택 시 템플릿 초기화
+    }))
+  }
+
+  const handleCreationMethodChange = (method) => {
+    setVmCreationMethod(method)
+    onConfigChange((prev) => ({
+      ...prev,
+      selectedTemplateId: '',
+      selectedISOImageId: '',
     }))
   }
 
@@ -147,7 +186,8 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   const canProceed = () => {
     switch (currentStep) {
       case 1:
-        return !!config.selectedServerId
+        return !!config.selectedServerId && 
+               (vmCreationMethod === 'template' ? !!config.selectedTemplateId : !!config.selectedISOImageId)
       case 2:
         return (
           (config.cpuCores && config.memory && config.selectedStorageId) ||
@@ -354,24 +394,68 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   )
 }
 
-// Step 1: Server Selection + Template Selection (Optional)
+// Step 1: Server Selection + Template/ISO Selection
 function ServerSelectionStep({
   servers,
   templates,
+  isoImages,
   selectedServerId,
   selectedTemplateId,
+  selectedISOImageId,
   serverName,
+  vmCreationMethod,
   onServerSelect,
   onTemplateSelect,
+  onISOSelect,
+  onCreationMethodChange,
   onNameChange,
   loading,
 }) {
   return (
     <div className="w-full max-w-full min-w-0">
-      <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Select Server</h3>
+      <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Select Server & OS Source</h3>
       <p className="text-xs md:text-sm text-gray-500 mb-2 md:mb-3">
-        Choose a server and optionally select a template
+        Choose a server and select template or ISO image
       </p>
+
+      {/* VM Creation Method Selection */}
+      {selectedServerId && (
+        <div className="mb-2 md:mb-3">
+          <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
+            VM Creation Method
+          </h4>
+          <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0">
+            <div className="grid grid-cols-2 gap-2 md:gap-3">
+              <button
+                onClick={() => onCreationMethodChange('template')}
+                className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
+                  vmCreationMethod === 'template'
+                    ? 'border-blue-600 bg-blue-50 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-blue-300'
+                }`}
+              >
+                <div className="font-semibold text-xs md:text-sm text-gray-900">Template</div>
+                <div className="text-[10px] md:text-xs text-gray-600 mt-0.5">
+                  Clone from template
+                </div>
+              </button>
+              <button
+                onClick={() => onCreationMethodChange('iso')}
+                className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
+                  vmCreationMethod === 'iso'
+                    ? 'border-blue-600 bg-blue-50 shadow-sm'
+                    : 'border-gray-200 bg-white hover:border-blue-300'
+                }`}
+              >
+                <div className="font-semibold text-xs md:text-sm text-gray-900">ISO Image</div>
+                <div className="text-[10px] md:text-xs text-gray-600 mt-0.5">
+                  Install from ISO
+                </div>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Instance Name Input */}
       <div className="mb-2 md:mb-3">
@@ -446,55 +530,109 @@ function ServerSelectionStep({
         </div>
       </div>
 
-      {/* Template Selection (Optional) */}
-      {templates.length > 0 && (
+      {/* Template Selection */}
+      {vmCreationMethod === 'template' && selectedServerId && (
         <div className="w-full max-w-full min-w-0">
           <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
             <Server className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-600 shrink-0" />
             Template Selection
           </h4>
           <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0 overflow-hidden">
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-3 w-full max-w-full">
-              <button
-                onClick={() => onTemplateSelect('')}
-                className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
-                  !selectedTemplateId
-                    ? 'border-blue-600 bg-blue-50 shadow-sm'
-                    : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
-                }`}
-              >
-                <div className="font-semibold text-xs md:text-sm text-gray-900">No Template</div>
-                <div className="text-[10px] md:text-xs text-gray-600 mt-0.5">
-                  Custom configuration
-                </div>
-              </button>
-              {templates.map((template) => (
-                <button
-                  key={template.id || template.template_id}
-                  onClick={() => onTemplateSelect(template.id || template.template_id)}
-                  className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
-                    selectedTemplateId === (template.id || template.template_id)
-                      ? 'border-blue-600 bg-blue-50 shadow-sm'
-                      : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
-                  }`}
-                >
-                  <div className="flex items-start justify-between gap-1.5">
-                    <div className="flex-1 min-w-0 overflow-hidden">
-                      <div className="font-semibold text-xs md:text-sm text-gray-900 mb-0.5 truncate">
-                        {template.name || template.template_name || 'Unnamed Template'}
+            {loading ? (
+              <div className="flex items-center justify-center py-6 md:py-8">
+                <Loader2 className="w-5 h-5 md:w-6 md:h-6 text-blue-600 animate-spin" />
+                <span className="ml-2 md:ml-3 text-xs md:text-sm text-gray-600">Loading...</span>
+              </div>
+            ) : templates.length === 0 ? (
+              <div className="text-center py-6 md:py-8 text-gray-500 border border-gray-200 rounded-lg bg-white">
+                <Server className="w-6 h-6 md:w-8 md:h-8 mx-auto mb-2 text-gray-400" />
+                <p className="text-xs md:text-sm">No templates available</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-3 w-full max-w-full">
+                {templates.map((template) => (
+                  <button
+                    key={template.id || template.template_id}
+                    onClick={() => onTemplateSelect(template.id || template.template_id)}
+                    className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
+                      selectedTemplateId === (template.id || template.template_id)
+                        ? 'border-blue-600 bg-blue-50 shadow-sm'
+                        : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="font-semibold text-xs md:text-sm text-gray-900 mb-0.5 truncate">
+                          {template.name || template.template_name || 'Unnamed Template'}
+                        </div>
+                        <div className="text-[10px] md:text-xs text-gray-600 space-y-0.5">
+                          {template.cpu_cores && <div>CPU: {template.cpu_cores} cores</div>}
+                          {template.memory_gb && <div>Memory: {template.memory_gb} GB</div>}
+                        </div>
                       </div>
-                      <div className="text-[10px] md:text-xs text-gray-600 space-y-0.5">
-                        {template.cpu_cores && <div>CPU: {template.cpu_cores} cores</div>}
-                        {template.memory_gb && <div>Memory: {template.memory_gb} GB</div>}
-                      </div>
+                      {selectedTemplateId === (template.id || template.template_id) && (
+                        <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
+                      )}
                     </div>
-                    {selectedTemplateId === (template.id || template.template_id) && (
-                      <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
-                    )}
-                  </div>
-                </button>
-              ))}
-            </div>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ISO Image Selection */}
+      {vmCreationMethod === 'iso' && selectedServerId && (
+        <div className="w-full max-w-full min-w-0">
+          <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
+            <HardDrive className="w-3.5 h-3.5 md:w-4 md:h-4 text-purple-600 shrink-0" />
+            ISO Image Selection
+          </h4>
+          <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0 overflow-hidden">
+            {loading ? (
+              <div className="flex items-center justify-center py-6 md:py-8">
+                <Loader2 className="w-5 h-5 md:w-6 md:h-6 text-blue-600 animate-spin" />
+                <span className="ml-2 md:ml-3 text-xs md:text-sm text-gray-600">Loading...</span>
+              </div>
+            ) : isoImages.length === 0 ? (
+              <div className="text-center py-6 md:py-8 text-gray-500 border border-gray-200 rounded-lg bg-white">
+                <HardDrive className="w-6 h-6 md:w-8 md:h-8 mx-auto mb-2 text-gray-400" />
+                <p className="text-xs md:text-sm">No ISO images available</p>
+                <p className="text-[10px] md:text-xs text-gray-400 mt-1">
+                  Upload ISO images to Proxmox storage first
+                </p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-3 w-full max-w-full">
+                {isoImages.map((iso) => (
+                  <button
+                    key={iso.id || iso.iso_id}
+                    onClick={() => onISOSelect(iso.id || iso.iso_id)}
+                    className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
+                      selectedISOImageId === (iso.id || iso.iso_id)
+                        ? 'border-blue-600 bg-blue-50 shadow-sm'
+                        : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
+                    }`}
+                  >
+                    <div className="flex items-start justify-between gap-1.5">
+                      <div className="flex-1 min-w-0 overflow-hidden">
+                        <div className="font-semibold text-xs md:text-sm text-gray-900 mb-0.5 truncate">
+                          {iso.name || iso.iso_name || 'Unnamed ISO'}
+                        </div>
+                        <div className="text-[10px] md:text-xs text-gray-600 space-y-0.5">
+                          {iso.size_gb && <div>Size: {iso.size_gb} GB</div>}
+                          {iso.storage && <div>Storage: {iso.storage}</div>}
+                        </div>
+                      </div>
+                      {selectedISOImageId === (iso.id || iso.iso_id) && (
+                        <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
+                      )}
+                    </div>
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
