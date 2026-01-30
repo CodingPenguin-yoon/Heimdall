@@ -1,10 +1,18 @@
 """
-Terraform 실행 서비스 모듈
+Terraform 실행 서비스 모듈 (제어 전용)
 
 이 모듈은 Terraform 명령어를 OS 레벨에서 실행하고 결과를 관리합니다.
+**중요**: 이 서비스는 리소스 제어(Create/Update/Delete)를 담당하며, 조회는 Proxmox API를 사용합니다.
+
+아키텍처 원칙:
+- 조회(Read): Proxmox API 직접 호출 (proxmox_service.py)
+- 제어(Create/Update/Delete): Terraform 사용 (이 모듈)
+
+기능:
 - terraform init, plan, apply 명령어 실행
 - 실시간 로그 스트리밍 및 에러 처리
 - 작업 상태 업데이트를 통한 비동기 작업 추적
+- Terraform output 값 조회
 """
 
 import subprocess

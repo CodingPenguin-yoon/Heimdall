@@ -92,6 +92,33 @@ npm run dev
 - Proxmox API 인증 정보 관리
 - 백엔드/프론트엔드 포트 설정
 
+## 🏛️ 아키텍처 원칙
+
+### 조회 vs 제어 분리
+
+이 프로젝트는 **조회(Read)와 제어(Create/Update/Delete)를 명확히 분리**합니다:
+
+#### 🔍 조회 (Proxmox API 직접 사용)
+- **용도**: 리소스 정보 조회 (서버, 템플릿, 스토리지, 네트워크, VM 목록)
+- **방식**: Proxmox API 직접 호출
+- **장점**: 
+  - 빠른 응답 시간
+  - 실시간 데이터
+  - 네트워크 부하 최소화
+- **API**: `GET /api/servers`, `GET /api/templates`, `GET /api/vms` 등
+
+#### ⚙️ 제어 (Terraform 사용)
+- **용도**: 리소스 생성/수정/삭제 (VM 생성, 설정 변경 등)
+- **방식**: Terraform IaC (Infrastructure as Code)
+- **장점**:
+  - 코드로 관리 (버전 관리, 추적 가능)
+  - 안전성 (plan으로 변경사항 미리 확인)
+  - 일관성 보장
+  - 롤백 가능
+- **API**: `POST /api/deploy` (Terraform apply 실행)
+
+이 분리로 **안전성과 효율성을 모두 확보**합니다.
+
 ## 🏗️ 프로젝트 구조
 
 ```

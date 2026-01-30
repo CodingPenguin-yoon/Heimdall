@@ -9,6 +9,8 @@
 
 import uuid
 import os
+import base64
+import yaml
 from fastapi import BackgroundTasks
 from app.services.task_manager import task_manager, TaskStatus
 from app.services.terraform_service import TerraformService
@@ -167,6 +169,10 @@ class DeploymentService:
                             # template_id만 있으면 노드와 조합 필요 (나중에 개선 가능)
                             terraform_vars["template_id"] = deploy_request["template_id"]
                     
+                    # ISO 이미지 ID (템플릿 없이 생성 시)
+                    if deploy_request.get("iso_image_id"):
+                        terraform_vars["iso_file"] = deploy_request["iso_image_id"]
+                    
                     # CPU 코어
                     if deploy_request.get("cpu_cores"):
                         terraform_vars["cpu_cores"] = int(deploy_request["cpu_cores"])
@@ -185,6 +191,18 @@ class DeploymentService:
                     # 네트워크 (리스트)
                     if deploy_request.get("network_ids"):
                         terraform_vars["network_ids"] = deploy_request["network_ids"]
+                    
+                    # Cloud-init user-data 생성 (SSH 키 자동 주입)
+                    # 템플릿이 없는 경우 Cloud-init으로 SSH 키 자동 주입
+                    # 템플릿 사용 시: 템플릿에 이미 SSH 키 포함 (Cloud-init 불필요)
+                    # ISO 사용 시: Cloud-init으로 SSH 키 자동 주입
+                    if not deploy_request.get("template_id"):
+                        cloudinit_user_data = self._generate_cloudinit_user_data()
+                        if cloudinit_user_data:
+                            terraform_vars["cloudinit_user_data"] = cloudinit_user_data
+                            task_manager.append_log(task_id, "Cloud-init user-data 생성 완료 (SSH 키 자동 주입)")
+                        else:
+                            task_manager.append_log(task_id, "경고: SSH 공개키를 찾을 수 없어 Cloud-init을 사용하지 않습니다")
                     
                     task_manager.append_log(task_id, f"Terraform 변수: {terraform_vars}")
                 

@@ -19,6 +19,7 @@ class DeployRequest(BaseModel):
     # Proxmox 리소스 선택 (마법사 스타일)
     server_id: Optional[str] = None
     template_id: Optional[str] = None
+    iso_image_id: Optional[str] = None  # ISO 이미지 ID (템플릿 없이 생성 시)
     storage_id: Optional[str] = None
     storage_type: Optional[str] = None
     network_ids: Optional[list] = None

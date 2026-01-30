@@ -14,15 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routes import deploy, status, logs, proxmox
 
 # 환경 변수 로드 (.env 파일에서)
-project_root = Path(__file__).parent.parent.parent
+# proxmox_service.py에서도 로드하지만, 다른 서비스들을 위해 여기서도 로드
+project_root = Path(__file__).resolve().parent.parent.parent
 env_path = project_root / ".env"
 if env_path.exists():
-    load_dotenv(env_path)
-else:
-    # 프로젝트 루트의 .env 파일도 확인
-    root_env = project_root.parent / ".env"
-    if root_env.exists():
-        load_dotenv(root_env)
+    load_dotenv(env_path, override=True)
 
 # FastAPI 애플리케이션 인스턴스 생성
 app = FastAPI(

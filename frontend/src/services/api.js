@@ -11,6 +11,37 @@ const apiClient = axios.create({
   timeout: 30000, // 30초 타임아웃
 })
 
+// 요청 인터셉터: API 호출 URL 로깅
+apiClient.interceptors.request.use(
+  (config) => {
+    const fullUrl = `${config.baseURL}${config.url}`
+    console.log(`[API Request] ${config.method?.toUpperCase()} ${fullUrl}`)
+    if (config.params) {
+      console.log('[API Params]', config.params)
+    }
+    if (config.data) {
+      console.log('[API Data]', config.data)
+    }
+    return config
+  },
+  (error) => {
+    console.error('[API Request Error]', error)
+    return Promise.reject(error)
+  }
+)
+
+// 응답 인터셉터: 응답 로깅
+apiClient.interceptors.response.use(
+  (response) => {
+    console.log(`[API Response] ${response.config.method?.toUpperCase()} ${response.config.url}`, response.status, response.data)
+    return response
+  },
+  (error) => {
+    console.error(`[API Error] ${error.config?.method?.toUpperCase()} ${error.config?.url}`, error.response?.status, error.response?.data || error.message)
+    return Promise.reject(error)
+  }
+)
+
 // 배포 시작 API
 export const deployInfrastructure = async (config) => {
   try {
@@ -135,6 +166,70 @@ export const getServerNetworks = async (serverId) => {
     return response
   } catch (error) {
     console.error('Get server networks API error:', error)
+    throw error
+  }
+}
+
+// VM 목록 조회 API (템플릿 제외)
+export const getVMs = async () => {
+  try {
+    const response = await apiClient.get('/vms')
+    return response
+  } catch (error) {
+    console.error('Get VMs API error:', error)
+    throw error
+  }
+}
+
+// 서버의 ISO 이미지 목록 조회 API
+export const getServerISOImages = async (serverId) => {
+  try {
+    const response = await apiClient.get(`/servers/${serverId}/iso-images`)
+    return response
+  } catch (error) {
+    console.error('Get server ISO images API error:', error)
+    throw error
+  }
+}
+
+// 서버의 VM 목록 조회 API
+export const getServerVMs = async (serverId) => {
+  try {
+    const response = await apiClient.get(`/servers/${serverId}/vms`)
+    return response
+  } catch (error) {
+    console.error('Get server VMs API error:', error)
+    throw error
+  }
+}
+
+// 모니터링 API
+export const getNodesMonitoring = async () => {
+  try {
+    const response = await apiClient.get('/monitoring/nodes')
+    return response
+  } catch (error) {
+    console.error('Get nodes monitoring API error:', error)
+    throw error
+  }
+}
+
+export const getNodeMonitoring = async (nodeId) => {
+  try {
+    const response = await apiClient.get(`/monitoring/nodes/${nodeId}`)
+    return response
+  } catch (error) {
+    console.error('Get node monitoring API error:', error)
+    throw error
+  }
+}
+
+export const getVMMonitoring = async (nodeId, vmid) => {
+  try {
+    const response = await apiClient.get(`/monitoring/vms/${nodeId}/${vmid}`)
+    return response
+  } catch (error) {
+    console.error('Get VM monitoring API error:', error)
     throw error
   }
 }

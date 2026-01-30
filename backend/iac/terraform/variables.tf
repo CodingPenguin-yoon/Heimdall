@@ -53,3 +53,17 @@ variable "network_ids" {
   type        = list(string)
   default     = []
 }
+
+# 템플릿 없이 VM 생성 시 사용할 ISO 이미지 (선택사항)
+variable "iso_file" {
+  description = "ISO 이미지 파일 경로 (템플릿 없이 VM 생성 시 사용, 예: local:iso/ubuntu-22.04-server-amd64.iso)"
+  type        = string
+  default     = ""
+}
+
+# Cloud-init 사용자 데이터 (선택사항)
+variable "cloudinit_user_data" {
+  description = "Cloud-init user-data (템플릿 없이 VM 생성 시 OS 설정용)"
+  type        = string
+  default     = ""
+}
