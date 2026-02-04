@@ -19,7 +19,15 @@ import subprocess
 import os
 from pathlib import Path
 from typing import Optional
-from app.services.task_manager import task_manager, TaskStatus
+from dotenv import load_dotenv
+from app.services.task.manager import task_manager, TaskStatus
+
+# .env 파일 로드
+project_root = Path(__file__).resolve().parent.parent.parent.parent
+env_path = project_root / ".env"
+if env_path.exists():
+    load_dotenv(env_path, override=True)
+    print(f"[TerraformService] .env 파일 로드됨: {env_path}")
 
 
 class TerraformService:
@@ -47,6 +55,34 @@ class TerraformService:
         # 디렉토리 존재 여부 확인
         if not self.terraform_dir.exists():
             self.terraform_dir.mkdir(parents=True, exist_ok=True)
+
+        # ------------------------------------------------------------------
+        # Proxmox 관련 환경변수를 Terraform 변수(TF_VAR_*)로 연결
+        # .env 에서는 PROXMOX_* 이름을 쓰고, Terraform은 TF_VAR_proxmox_* 를 기대하므로
+        # 여기서 한 번만 매핑해 두면 이후 subprocess 에서 그대로 사용 가능하다.
+        # ------------------------------------------------------------------
+        proxmox_api_url = os.getenv("PROXMOX_API_URL")
+        if proxmox_api_url and not os.getenv("TF_VAR_proxmox_api_url"):
+            os.environ["TF_VAR_proxmox_api_url"] = proxmox_api_url
+
+        proxmox_token_id = os.getenv("PROXMOX_API_TOKEN_ID")
+        if proxmox_token_id and not os.getenv("TF_VAR_proxmox_api_token_id"):
+            os.environ["TF_VAR_proxmox_api_token_id"] = proxmox_token_id
+
+        proxmox_token_secret = os.getenv("PROXMOX_API_TOKEN_SECRET")
+        if proxmox_token_secret and not os.getenv("TF_VAR_proxmox_api_token_secret"):
+            os.environ["TF_VAR_proxmox_api_token_secret"] = proxmox_token_secret
+
+        proxmox_tls_insecure = os.getenv("PROXMOX_TLS_INSECURE")
+        if proxmox_tls_insecure is not None and not os.getenv("TF_VAR_proxmox_tls_insecure"):
+            # 문자열(true/false)를 Terraform 이 이해할 수 있는 bool 값으로 넘긴다.
+            value = str(proxmox_tls_insecure).strip().lower() in ["1", "true", "yes", "on"]
+            os.environ["TF_VAR_proxmox_tls_insecure"] = "true" if value else "false"
+
+        # 디버깅: 환경변수 확인
+        print(f"[TerraformService] TF_VAR_proxmox_api_url: {os.getenv('TF_VAR_proxmox_api_url', 'NOT SET')}")
+        print(f"[TerraformService] TF_VAR_proxmox_api_token_id: {os.getenv('TF_VAR_proxmox_api_token_id', 'NOT SET')}")
+        print(f"[TerraformService] TF_VAR_proxmox_api_token_secret: {'SET' if os.getenv('TF_VAR_proxmox_api_token_secret') else 'NOT SET'}")
     
     def _run_command(
         self,
@@ -123,15 +159,15 @@ class TerraformService:
     def plan(self, task_id: str) -> tuple[bool, str]:
         """
         terraform plan 실행
-        
+
         Args:
             task_id: 작업 식별자
-            
+
         Returns:
             (성공 여부, 에러 메시지) 튜플
         """
         task_manager.append_log(task_id, "=== Terraform Plan 시작 ===")
-        return self._run_command(["terraform", "plan"], task_id)
+        return self._run_command(["terraform", "plan", "-input=false"], task_id)
     
     def apply(
         self, 
@@ -151,7 +187,7 @@ class TerraformService:
             (성공 여부, 에러 메시지) 튜플
         """
         task_manager.append_log(task_id, "=== Terraform Apply 시작 ===")
-        command = ["terraform", "apply"]
+        command = ["terraform", "apply", "-input=false"]
         if auto_approve:
             command.append("-auto-approve")
         

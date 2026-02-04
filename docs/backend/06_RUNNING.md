@@ -146,18 +146,35 @@ curl http://localhost:8000/
 
 ## 디렉토리 구조 확인
 
-백엔드가 정상적으로 작동하려면 다음 디렉토리 구조가 필요합니다:
+백엔드가 정상적으로 작동하려면 다음과 유사한 디렉토리 구조가 필요합니다:
 
 ```
 backend/
 ├── app/
 │   ├── main.py
 │   ├── routes/
+│   │   ├── deploy.py
+│   │   ├── status.py
+│   │   ├── logs.py
+│   │   ├── proxmox.py
+│   │   └── llm.py
 │   └── services/
+│       ├── deployment/
+│       │   └── service.py
+│       ├── terraform_service.py
+│       ├── ansible/
+│       │   └── __init__.py
+│       ├── proxmox/
+│       │   └── __init__.py
+│       ├── task/
+│       │   └── manager.py
+│       └── llm/
+│           ├── llm_core.py
+│           ├── service.py
+│           └── infra_action_service.py
 ├── iac/
 │   ├── terraform/
-│   │   ├── main.tf
-│   │   └── variables.tf
+│   │   └── main.tf
 │   └── ansible/
 │       ├── playbook.yml
 │       └── inventory.yml.example

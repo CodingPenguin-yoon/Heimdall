@@ -369,6 +369,106 @@ Proxmox VM 목록을 조회합니다 (템플릿 제외).
 
 ---
 
+### 6. LLM 인프라 어시스턴트 API (`/api/llm`)
+
+자연어 기반 인프라 제어를 위한 LLM(Gemini) 연동 엔드포인트입니다.
+
+#### POST `/api/llm/chat`
+LLM과의 채팅을 수행하고, 제안된 인프라 액션 목록을 반환합니다.
+
+**요청 본문 (JSON)**:
+```json
+{
+  "messages": [
+    { "role": "user", "content": "현재 VM 상태 보여줘" },
+    { "role": "assistant", "content": "이전 어시스턴트 응답..." }
+  ],
+  "latest_message": {
+    "role": "user",
+    "content": "CPU 4코어, 메모리 8GB로 Ubuntu VM 하나 만들어줘"
+  },
+  "context": {
+    "note": "선택적 Proxmox/VM 요약 정보를 넣을 수 있는 필드"
+  }
+}
+```
+
+**응답**:
+```json
+{
+  "assistant_message": "요청하신 조건으로 VM을 생성할 수 있습니다. 아래 액션을 확인 후 실행 버튼을 눌러 주세요.",
+  "actions": [
+    {
+      "type": "create_vm",
+      "description": "pve-node1에 CPU 4코어, 메모리 8GB, 디스크 50GB Ubuntu VM을 생성",
+      "params": {
+        "server_id": "pve-node1",
+        "server_name": "ubuntu-llm-vm",
+        "template_id": "pve-node1/100",
+        "cpu_cores": 4,
+        "memory_gb": 8,
+        "disk_size_gb": 50,
+        "storage_id": "local-lvm",
+        "network_ids": ["vmbr0"]
+      }
+    }
+  ]
+}
+```
+
+#### POST `/api/llm/execute-action`
+LLM이 제안한 인프라 액션을 실제로 실행합니다.
+
+> ⚠️ **중요**: 이 엔드포인트는 프론트엔드에서 사용자의 명시적 확인(버튼 클릭) 후에만 호출해야 합니다.
+
+**요청 본문 (JSON)**:
+```json
+{
+  "action": {
+    "type": "create_vm",
+    "description": "pve-node1에 CPU 4코어, 메모리 8GB, 디스크 50GB Ubuntu VM을 생성",
+    "params": {
+      "server_id": "pve-node1",
+      "server_name": "ubuntu-llm-vm",
+      "template_id": "pve-node1/100",
+      "cpu_cores": 4,
+      "memory_gb": 8,
+      "disk_size_gb": 50,
+      "storage_id": "local-lvm",
+      "network_ids": ["vmbr0"]
+    }
+  }
+}
+```
+
+**응답**:
+```json
+{
+  "result_message": "VM 생성 배포 작업을 시작했습니다. 이름: ubuntu-llm-vm, task_id: \"...\"",
+  "raw_result": {
+    "task_id": "550e8400-e29b-41d4-a716-446655440000",
+    "deploy_request": {
+      "server_id": "pve-node1",
+      "server_name": "ubuntu-llm-vm",
+      "template_id": "pve-node1/100",
+      "cpu_cores": 4,
+      "memory_gb": 8,
+      "disk_size_gb": 50,
+      "storage_id": "local-lvm",
+      "network_ids": ["vmbr0"]
+    }
+  }
+}
+```
+
+**지원 액션 타입 예시**:
+- `list_vms`      : VM 목록 조회 (옵션: `node`)
+- `list_nodes`    : Proxmox 노드 목록 조회
+- `get_vm_detail` : 특정 VM 상태 조회 (`vm_id` = `"node/vmid"`)
+- `create_vm`     : 새 VM 생성 (DeploymentService 재사용)
+
+---
+
 ## 헬스체크 엔드포인트
 
 ### GET `/`

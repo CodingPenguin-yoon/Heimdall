@@ -8,7 +8,7 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from app.services.task_manager import task_manager
+from app.services.task.manager import task_manager
 
 router = APIRouter()
 

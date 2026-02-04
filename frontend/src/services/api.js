@@ -234,4 +234,26 @@ export const getVMMonitoring = async (nodeId, vmid) => {
   }
 }
 
+// LLM 채팅 API
+export const llmChat = async (payload) => {
+  try {
+    const response = await apiClient.post('/llm/chat', payload)
+    return response
+  } catch (error) {
+    console.error('LLM Chat API error:', error)
+    throw error
+  }
+}
+
+// LLM 액션 실행 API
+export const executeLlmAction = async ({ action }) => {
+  try {
+    const response = await apiClient.post('/llm/execute-action', { action })
+    return response
+  } catch (error) {
+    console.error('Execute LLM Action API error:', error)
+    throw error
+  }
+}
+
 export default apiClient

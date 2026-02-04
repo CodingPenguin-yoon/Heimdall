@@ -10,7 +10,7 @@
 전체 배포 프로세스를 통합 관리하는 서비스입니다. Terraform과 Ansible을 순차적으로 실행하여 인프라를 배포합니다.
 
 ### 위치
-`backend/app/services/deployment_service.py`
+`backend/app/services/deployment/service.py`
 
 ### 주요 메서드
 
@@ -152,7 +152,7 @@ Terraform 명령어를 실행하는 내부 메서드입니다.
 Ansible Playbook을 OS 레벨에서 실행하고 결과를 관리합니다.
 
 ### 위치
-`backend/app/services/ansible_service.py`
+`backend/app/services/ansible/__init__.py`
 
 ### 작업 디렉토리
 `backend/iac/ansible/`
@@ -220,7 +220,7 @@ ansible-playbook playbook.yml \
 Proxmox API와 통신하여 리소스 정보를 조회합니다.
 
 ### 위치
-`backend/app/services/proxmox_service.py`
+`backend/app/services/proxmox/__init__.py`
 
 ### 중요 원칙
 **조회 전용**: 이 서비스는 리소스 조회만 담당하며, 생성/수정/삭제는 Terraform을 통해 수행합니다.
@@ -307,7 +307,7 @@ Proxmox ISO 이미지 목록을 조회합니다.
 배포 작업의 상태와 로그를 메모리에 저장하고 관리합니다.
 
 ### 위치
-`backend/app/services/task_manager.py`
+`backend/app/services/task/manager.py`
 
 ### 설계 패턴
 **싱글톤 패턴**: 전역 단일 인스턴스로 작업 상태를 중앙 관리합니다.
@@ -390,17 +390,45 @@ class TaskStatus(str, Enum):
 
 ### 전역 인스턴스
 ```python
-# app/services/task_manager.py
+# app/services/task/manager.py
 task_manager = TaskManager()
 ```
 
 다른 모듈에서 사용:
 ```python
-from app.services.task_manager import task_manager
+from app.services.task.manager import task_manager
 
 task_manager.create_task(task_id)
 task_manager.append_log(task_id, "로그 메시지")
 ```
+
+---
+
+## 6. LLMService & InfraActionService (LLM 인프라 어시스턴트)
+
+### 역할
+
+- Gemini LLM 과 통신하고, LLM이 제안한 인프라 액션을 실제 서비스 호출로 매핑합니다.
+- 조회 액션은 ProxmoxService 를 통해 즉시 실행하고, 생성 액션(`create_vm`) 은 DeploymentService 를 통해 일반 배포 파이프라인을 재사용합니다.
+
+### 위치
+
+- `backend/app/services/llm/service.py` (LLMService 래퍼)
+- `backend/app/services/llm/llm_core.py` (Gemini 호출 핵심)
+- `backend/app/services/llm/infra_action_service.py` (액션 실행)
+
+### 주요 구성요소
+
+- `LLMService`
+  - `chat(messages, extra_context)` 메서드로 Gemini 호출
+  - 자연어 응답 + `actions` 리스트(`type`, `description`, `params`) 반환
+- `InfraActionType`
+  - `list_vms`, `list_nodes`, `get_vm_detail`, `create_vm` 등 지원 타입 정의
+- `InfraActionService.execute_action(action, background_tasks)`
+  - 타입에 따라 ProxmoxService 또는 DeploymentService 호출
+  - `create_vm` 의 경우:
+    - `DeploymentService.start_deployment_with_request(...)` 호출
+    - `/api/deploy` 와 동일한 배포 플로우 사용
 
 ---
 

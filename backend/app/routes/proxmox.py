@@ -19,7 +19,7 @@ API 엔드포인트:
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
-from app.services.proxmox_service import ProxmoxService
+from app.services.proxmox import ProxmoxService
 
 router = APIRouter()
 proxmox_service = ProxmoxService()

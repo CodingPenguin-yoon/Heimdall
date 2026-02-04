@@ -6,7 +6,8 @@ import InstanceList from './components/InstanceList'
 import MonitoringDashboard from './components/MonitoringDashboard'
 import StatusPanel from './components/StatusPanel'
 import LogViewer from './components/LogViewer'
-import { Server, List, Plus, Activity } from 'lucide-react'
+import LlmInfraChat from './components/LlmInfraChat'
+import { Server, List, Plus, Activity, Sparkles } from 'lucide-react'
 import { deployInfrastructure, checkStatus, getLogs } from './services/api'
 
 function App() {
@@ -189,6 +190,17 @@ function App() {
               <Activity className="w-5 h-5" />
               Monitoring
             </button>
+            <button
+              onClick={() => navigate('/assistant')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'assistant'
+                  ? 'text-purple-600 border-purple-600 bg-purple-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <Sparkles className="w-5 h-5" />
+              LLM Assistant
+            </button>
           </div>
         </div>
       </div>
@@ -201,14 +213,11 @@ function App() {
             path="/list"
             element={
               <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
-                <InstanceList
-                  onLogsUpdate={setLogs}
-                  onStatusChange={setStatus}
-                />
+                <InstanceList onLogsUpdate={setLogs} onStatusChange={setStatus} />
               </div>
             }
           />
-          
+
           {/* Monitoring Dashboard Route */}
           <Route
             path="/monitoring"
@@ -218,7 +227,17 @@ function App() {
               </div>
             }
           />
-          
+
+          {/* LLM Assistant Route */}
+          <Route
+            path="/assistant"
+            element={
+              <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-6">
+                <LlmInfraChat />
+              </div>
+            }
+          />
+
           {/* Create Instance Route (Default) */}
           <Route
             path="/"
