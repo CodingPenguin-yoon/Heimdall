@@ -118,17 +118,24 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
       setCurrentStep(currentStep - 1)
     }
   }
-
+  
   const handleServerSelect = (serverId) => {
-    onConfigChange((prev) => ({
-      ...prev,
-      selectedServerId: serverId,
-      selectedTemplateId: '',
-      cpuCores: '',
-      memory: '',
-      selectedStorageId: '',
-      selectedNetworkIds: [],
-    }))
+    console.log('[DEBUG] handleServerSelect called with serverId:', serverId)
+    // 서버를 새로 선택하면 생성 방식은 기본적으로 템플릿 기준으로 리셋
+    setVmCreationMethod('template')
+    onConfigChange((prev) => {
+      const newConfig = {
+        ...prev,
+        selectedServerId: serverId,
+        selectedTemplateId: '',
+        cpuCores: '',
+        memory: '',
+        selectedStorageId: '',
+        selectedNetworkIds: [],
+      }
+      console.log('[DEBUG] New config after server select:', newConfig)
+      return newConfig
+    })
   }
 
   const handleTemplateSelect = (templateId) => {
@@ -184,15 +191,19 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   }
 
   const canProceed = () => {
+    let result = false
     switch (currentStep) {
       case 1:
-        return !!config.selectedServerId && 
-               (vmCreationMethod === 'template' ? !!config.selectedTemplateId : !!config.selectedISOImageId)
+        // 임시로 OS 소스(템플릿/ISO)가 없어도 서버만 선택되면 다음 스텝으로 진행 가능하게 완화
+        result = !!config.selectedServerId
+        console.log('[DEBUG] canProceed step 1 - selectedServerId:', config.selectedServerId, 'result:', result)
+        return result
       case 2:
-        return (
+        result = (
           (config.cpuCores && config.memory && config.selectedStorageId) ||
           (config.selectedTemplateId && config.selectedStorageId)
         )
+        return result
       case 3:
         return config.selectedNetworkIds?.length > 0
       case 4:
@@ -210,11 +221,16 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
           <ServerSelectionStep
             servers={servers}
             templates={templates}
+            isoImages={isoImages}
             selectedServerId={config.selectedServerId}
             selectedTemplateId={config.selectedTemplateId}
+            selectedISOImageId={config.selectedISOImageId}
             serverName={config.serverName || ''}
+            vmCreationMethod={vmCreationMethod}
             onServerSelect={handleServerSelect}
             onTemplateSelect={handleTemplateSelect}
+            onISOSelect={handleISOSelect}
+            onCreationMethodChange={handleCreationMethodChange}
             onNameChange={(name) =>
               onConfigChange((prev) => ({ ...prev, serverName: name }))
             }
@@ -363,6 +379,7 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
       {/* Navigation Buttons */}
       <div className="mt-6 flex justify-between">
         <button
+          type="button"
           onClick={handleBack}
           disabled={currentStep === 1}
           className="px-6 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded-md hover:bg-gray-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
@@ -372,7 +389,11 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
         <div className="flex gap-3">
           {currentStep < STEPS.length ? (
             <button
-              onClick={handleNext}
+              type="button"
+              onClick={() => {
+                console.log('[DEBUG] Next button clicked, canProceed:', canProceed(), 'currentStep:', currentStep)
+                handleNext()
+              }}
               disabled={!canProceed()}
               className="px-6 py-2.5 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
             >
@@ -381,6 +402,7 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
             </button>
           ) : (
             <button
+              type="button"
               onClick={onDeploy}
               disabled={!canProceed()}
               className="px-6 py-2.5 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
@@ -427,6 +449,7 @@ function ServerSelectionStep({
           <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0">
             <div className="grid grid-cols-2 gap-2 md:gap-3">
               <button
+                type="button"
                 onClick={() => onCreationMethodChange('template')}
                 className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
                   vmCreationMethod === 'template'
@@ -440,6 +463,7 @@ function ServerSelectionStep({
                 </div>
               </button>
               <button
+                type="button"
                 onClick={() => onCreationMethodChange('iso')}
                 className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
                   vmCreationMethod === 'iso'
@@ -498,12 +522,19 @@ function ServerSelectionStep({
             </div>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-3 w-full max-w-full">
-              {servers.map((server) => (
+              {servers.map((server) => {
+                const serverId = server.id || server.server_id
+                console.log('[DEBUG] Rendering server button:', server.name, 'serverId:', serverId)
+                return (
                 <button
-                  key={server.id || server.server_id}
-                  onClick={() => onServerSelect(server.id || server.server_id)}
+                  type="button"
+                  key={serverId}
+                  onClick={() => {
+                    console.log('[DEBUG] Server button clicked, serverId:', serverId)
+                    onServerSelect(serverId)
+                  }}
                   className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
-                    selectedServerId === (server.id || server.server_id)
+                    selectedServerId === serverId
                       ? 'border-blue-600 bg-blue-50 shadow-sm'
                       : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
                   }`}
@@ -519,12 +550,12 @@ function ServerSelectionStep({
                         </div>
                       )}
                     </div>
-                    {selectedServerId === (server.id || server.server_id) && (
+                    {selectedServerId === serverId && (
                       <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
                     )}
                   </div>
                 </button>
-              ))}
+              )})}
             </div>
           )}
         </div>
@@ -662,7 +693,8 @@ function SpecStorageSelectionStep({
       onSpecChange('cpuCores', selectedTemplate.cpu_cores?.toString() || '')
       onSpecChange('memory', selectedTemplate.memory_gb?.toString() || '')
     }
-  }, [selectedTemplateId, selectedTemplate, onSpecChange])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedTemplateId])
 
   return (
     <div className="w-full max-w-full min-w-0">

@@ -1,18 +1,8 @@
 """
-Terraform 실행 서비스 모듈 (제어 전용)
+Terraform 실행 서비스 패키지
 
-이 모듈은 Terraform 명령어를 OS 레벨에서 실행하고 결과를 관리합니다.
-**중요**: 이 서비스는 리소스 제어(Create/Update/Delete)를 담당하며, 조회는 Proxmox API를 사용합니다.
-
-아키텍처 원칙:
-- 조회(Read): Proxmox API 직접 호출 (proxmox_service.py)
-- 제어(Create/Update/Delete): Terraform 사용 (이 모듈)
-
-기능:
-- terraform init, plan, apply 명령어 실행
-- 실시간 로그 스트리밍 및 에러 처리
-- 작업 상태 업데이트를 통한 비동기 작업 추적
-- Terraform output 값 조회
+이 패키지는 Terraform 명령어를 OS 레벨에서 실행하고 결과를 관리합니다.
+기존 단일 모듈이었던 `terraform_service.py`의 구현을 패키지 구조로 옮겼습니다.
 """
 
 import subprocess
@@ -23,7 +13,9 @@ from dotenv import load_dotenv
 from app.services.task.manager import task_manager, TaskStatus
 
 # .env 파일 로드
-project_root = Path(__file__).resolve().parent.parent.parent.parent
+# 패키지로 이동하면서 경로 깊이가 1단계 늘어났기 때문에
+# 항상 프로젝트 루트(backend 기준 한 단계 위)의 .env 를 바라보도록 조정한다.
+project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
 env_path = project_root / ".env"
 if env_path.exists():
     load_dotenv(env_path, override=True)
@@ -159,10 +151,10 @@ class TerraformService:
     def plan(self, task_id: str) -> tuple[bool, str]:
         """
         terraform plan 실행
-
+        
         Args:
             task_id: 작업 식별자
-
+            
         Returns:
             (성공 여부, 에러 메시지) 튜플
         """
@@ -267,3 +259,4 @@ class TerraformService:
                 return {}
         except Exception as e:
             return {}
+

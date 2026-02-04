@@ -1,11 +1,8 @@
 """
-Ansible 실행 서비스 모듈
+Ansible 실행 서비스 패키지
 
-이 모듈은 Ansible Playbook을 OS 레벨에서 실행하고 결과를 관리합니다.
-- ansible-playbook 명령어 실행
-- 실시간 로그 스트리밍 및 에러 처리
-- 작업 상태 업데이트를 통한 비동기 작업 추적
-- 동적 inventory 파일 생성 및 IP 주소 전달
+이 패키지는 Ansible Playbook을 OS 레벨에서 실행하고 결과를 관리합니다.
+기존 단일 모듈이었던 `ansible_service.py`의 구현을 패키지 구조로 옮겼습니다.
 """
 
 import subprocess
@@ -13,7 +10,7 @@ import os
 import yaml
 from pathlib import Path
 from typing import Optional, Dict, List
-from app.services.task_manager import task_manager, TaskStatus
+from app.services.task.manager import task_manager, TaskStatus
 
 
 class AnsibleService:
@@ -200,3 +197,4 @@ class AnsibleService:
             if task_id:
                 task_manager.append_log(task_id, f"EXCEPTION: {error_msg}")
             return False, error_msg
+

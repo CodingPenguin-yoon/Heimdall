@@ -75,6 +75,24 @@ BACKEND_PORT=8000
 FRONTEND_PORT=5173
 ```
 
+### 5. LLM / Gemini 설정
+
+LLM 기반 자연어 채팅 탭에서 Google Gemini API를 사용하기 위한 설정입니다.
+
+```bash
+# Gemini API 키 (필수)
+GEMINI_API_KEY=your_gemini_api_key_here
+
+# 사용할 Gemini 모델명 (선택, 기본값 예: gemini-2.0-flash)
+GEMINI_MODEL_NAME=gemini-2.0-flash
+
+# LLM 호출 타임아웃 (초, 선택)
+GEMINI_TIMEOUT_SECONDS=30
+```
+
+위 값들은 백엔드에서 LLM을 호출할 때만 사용되며,
+VM 이름/스펙/상태 같은 **메타데이터 수준의 정보만** LLM API로 전달되도록 설계할 수 있습니다.
+
 ## 🚀 설정 방법
 
 ### 1. 환경 파일 생성

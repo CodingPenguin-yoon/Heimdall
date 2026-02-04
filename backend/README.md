@@ -58,9 +58,22 @@ pip install -r requirements.txt
 ### 3. 환경변수 설정
 
 ```bash
-cp .env.example .env
-# .env 파일을 편집하여 Proxmox API 정보 입력
+cp env.example .env
+# .env 파일을 편집하여 Proxmox / Ansible / Gemini API 정보 입력
 ```
+
+`.env` 파일에는 최소한 다음 항목들을 설정해야 합니다:
+
+- Proxmox API
+  - `PROXMOX_API_URL`
+  - `PROXMOX_API_TOKEN_ID`
+  - `PROXMOX_API_TOKEN_SECRET`
+- Ansible SSH
+  - `ANSIBLE_SSH_USER`
+  - `ANSIBLE_SSH_PRIVATE_KEY_FILE`
+- LLM / Gemini (자연어 채팅 탭 기능 사용 시)
+  - `GEMINI_API_KEY`
+  - `GEMINI_MODEL_NAME` (선택, 미설정 시 기본값 사용 가능)
 
 ### 4. Terraform Provider 설정
 

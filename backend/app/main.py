@@ -11,7 +11,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routes import deploy, status, logs, proxmox
+from app.routes import deploy, status, logs, proxmox, llm
 
 # 환경 변수 로드 (.env 파일에서)
 # proxmox_service.py에서도 로드하지만, 다른 서비스들을 위해 여기서도 로드
@@ -45,6 +45,7 @@ app.include_router(deploy.router, prefix="/api", tags=["deploy"])
 app.include_router(status.router, prefix="/api", tags=["status"])
 app.include_router(logs.router, prefix="/api", tags=["logs"])
 app.include_router(proxmox.router, prefix="/api", tags=["proxmox"])
+app.include_router(llm.router, prefix="/api", tags=["llm"])
 
 
 @app.get("/")

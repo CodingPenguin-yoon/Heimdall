@@ -1,19 +1,8 @@
 """
-Proxmox API 연동 서비스 모듈 (조회 전용)
+Proxmox API 연동 서비스 패키지
 
-이 모듈은 Proxmox API와 통신하여 리소스 정보를 조회합니다.
-**중요**: 이 서비스는 조회(Read)만 담당하며, 리소스 생성/수정/삭제는 Terraform을 통해 수행합니다.
-
-아키텍처 원칙:
-- 조회(Read): Proxmox API 직접 호출 (빠르고 실시간)
-- 제어(Create/Update/Delete): Terraform 사용 (IaC의 이점, 안전성, 추적 가능성)
-
-기능:
-- 노드(서버) 목록 조회
-- 템플릿 목록 조회
-- VM 목록 조회 (템플릿 제외)
-- 스토리지 목록 조회
-- 네트워크 목록 조회
+이 패키지는 Proxmox API와 통신하여 리소스 정보를 조회하는 기능을 제공합니다.
+기존 단일 모듈이었던 `proxmox_service.py`의 구현을 패키지 구조로 옮겼습니다.
 """
 
 import os
@@ -27,8 +16,9 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # 환경 변수 로드 (ProxmoxService가 import될 때 실행)
-# main.py의 load_dotenv보다 먼저 실행될 수 있으므로 여기서도 로드
-project_root = Path(__file__).resolve().parent.parent.parent.parent
+# 패키지로 이동하면서 경로 깊이가 1단계 늘어났기 때문에
+# 항상 프로젝트 루트(backend 기준 한 단계 위)의 .env 를 바라보도록 조정한다.
+project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
 env_path = project_root / ".env"
 if env_path.exists():
     load_dotenv(env_path, override=True)
@@ -451,9 +441,9 @@ class ProxmoxService:
                 if not storage_name:
                     continue
                 
-                # 스토리지 콘텐츠 조회
+                # 스토리지 콘텐츠 조회 (노드 경로 사용)
                 try:
-                    content_result = self._make_request(f"/storage/{storage_name}/content")
+                    content_result = self._make_request(f"/nodes/{node}/storage/{storage_name}/content")
                     content_list = content_result.get("data", [])
                     
                     # ISO 이미지만 필터링
@@ -693,3 +683,4 @@ class ProxmoxService:
             return monitoring_data
         except Exception:
             return []
+

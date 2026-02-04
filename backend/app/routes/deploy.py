@@ -8,7 +8,7 @@
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import Optional
-from app.services.deployment_service import DeploymentService
+from app.services.deployment.service import DeploymentService
 
 router = APIRouter()
 deployment_service = DeploymentService()

@@ -13,17 +13,19 @@
 ┌─────────────────────────────────────────┐
 │      FastAPI 라우터 (routes/)            │
 │  - deploy.py, status.py, logs.py,        │
-│    proxmox.py                            │
+│    proxmox.py, llm.py                   │
 └──────────────┬──────────────────────────┘
                │ 서비스 호출
                ▼
 ┌─────────────────────────────────────────┐
 │      서비스 레이어 (services/)            │
-│  - deployment_service.py                 │
+│  - deployment/service.py                │
 │  - terraform_service.py                 │
-│  - ansible_service.py                   │
-│  - proxmox_service.py                   │
-│  - task_manager.py                      │
+│  - ansible/__init__.py                  │
+│  - proxmox/__init__.py                  │
+│  - task/manager.py                      │
+│  - llm/* (llm_core, service,            │
+│           infra_action_service 등)      │
 └──────────────┬──────────────────────────┘
                │ 외부 시스템 호출
                ▼
@@ -56,7 +58,7 @@
 
 **역할**: 실제 비즈니스 로직을 처리합니다.
 
-#### 2.1 DeploymentService
+#### 2.1 DeploymentService (배포 도메인)
 - **책임**: 전체 배포 프로세스를 통합 관리
 - **기능**: Terraform과 Ansible을 순차적으로 실행
 - **특징**: BackgroundTasks를 사용하여 비동기 처리
@@ -79,6 +81,40 @@
 #### 2.5 TaskManager
 - **책임**: 작업 상태와 로그를 메모리에 저장
 - **기능**: task_id 기반 상태 추적, 로그 수집
+- **특징**: Thread-safe 싱글톤 패턴
+
+#### 2.2 TerraformService (Terraform 실행 도메인)
+
+- **책임**: Terraform 명령어 실행
+- **위치**: `backend/app/services/terraform_service.py`
+- **기능**: `terraform init`, `plan`, `apply`, `destroy`, `output`
+
+#### 2.3 AnsibleService (Ansible 실행 도메인)
+
+- **책임**: Ansible Playbook 실행 및 inventory 생성
+- **위치**: `backend/app/services/ansible/__init__.py`
+
+#### 2.4 ProxmoxService (조회/모니터링 도메인)
+
+- **책임**: Proxmox API와 통신하여 리소스 및 모니터링 정보 조회
+- **위치**: `backend/app/services/proxmox/__init__.py`
+- **원칙**: **조회 전용(Read-only)** — 생성/수정/삭제는 Terraform 사용
+
+#### 2.5 LLM 도메인 (Gemini + 인프라 액션)
+
+- **파일들**: `backend/app/services/llm/`
+  - `llm_core.py`: Gemini 호출 및 응답 파싱
+  - `service.py`: `LLMService` 래퍼
+  - `infra_action_service.py`: LLM이 제안한 액션을 Proxmox/DeploymentService 에 매핑
+- **역할**:
+  - 자연어 대화를 기반으로 인프라 조회/생성 액션 제안
+  - 안전한 액션 타입(`list_vms`, `list_nodes`, `get_vm_detail`, `create_vm` 등)만 지원
+  - `create_vm` 의 경우 `DeploymentService` 를 재사용하여 일반 배포 파이프라인과 동일하게 실행
+
+#### 2.6 TaskManager (작업 상태 도메인)
+
+- **책임**: 작업 상태와 로그를 메모리에 저장
+- **위치**: `backend/app/services/task/manager.py`
 - **특징**: Thread-safe 싱글톤 패턴
 
 ### 3. 외부 시스템
