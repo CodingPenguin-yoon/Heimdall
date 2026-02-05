@@ -13,12 +13,12 @@
             "state": {
               "type": "markdown",
               "state": {
-                "file": "ENV_SETTINGS_EXPLAINED.md",
+                "file": "flows/01_DEPLOYMENT_WEB_TO_VM.md",
                 "mode": "preview",
                 "source": false
               },
               "icon": "lucide-file",
-              "title": "ENV_SETTINGS_EXPLAINED"
+              "title": "01_DEPLOYMENT_WEB_TO_VM"
             }
           }
         ]
@@ -185,6 +185,7 @@
   },
   "active": "9d4328253766e728",
   "lastOpenFiles": [
+    "ENV_SETTINGS_EXPLAINED.md",
     "backend/README.md",
     "backend/06_RUNNING.md",
     "backend/05_DEPLOYMENT_FLOW.md",
