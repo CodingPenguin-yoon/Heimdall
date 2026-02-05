@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
+from app.services.llm.chat_session import ChatSessionService
 from app.services.llm.infra_action_service import (
     InfraAction,
     InfraActionResult,
@@ -32,6 +33,7 @@ router = APIRouter()
 # 서비스 인스턴스는 모듈 레벨에서 생성하여 재사용
 llm_service = LLMService()
 infra_action_service = InfraActionService()
+chat_session_service = ChatSessionService()
 
 
 class ChatMessage(BaseModel):
@@ -45,14 +47,19 @@ class ChatRequest(BaseModel):
     """
     LLM 채팅 요청 모델
 
-    - messages: 기존 대화 이력 (system 제외)
+    - session_id: 채팅 세션 ID (선택적, 없으면 새로 생성)
+    - messages: 기존 대화 이력 (system 제외, session_id가 있으면 무시됨)
     - latest_message: 이번에 새로 보낸 사용자 메시지(선택)
     - context: 선택적 인프라 컨텍스트 (예: 현재 선택된 클러스터/프로젝트 정보)
     """
 
+    session_id: Optional[str] = Field(
+        default=None,
+        description="채팅 세션 ID (Redis에 저장된 대화 이력을 조회하기 위해 사용)",
+    )
     messages: List[ChatMessage] = Field(
         default_factory=list,
-        description="기존 대화 이력 (user/assistant 메시지 목록)",
+        description="기존 대화 이력 (session_id가 없을 때만 사용, session_id가 있으면 Redis에서 조회)",
     )
     latest_message: Optional[ChatMessage] = Field(
         default=None,
@@ -67,11 +74,13 @@ class ChatRequest(BaseModel):
 class ChatResponse(BaseModel):
     """LLM 채팅 응답 모델
 
+    - session_id: 채팅 세션 ID (Redis에 대화 이력이 저장됨)
     - assistant_message: 자연어 응답
     - actions: 제안된 액션 목록
     - data: 일부 조회 액션(list_vms, list_nodes 등)을 자동 실행한 결과 JSON
     """
 
+    session_id: str = Field(description="채팅 세션 ID (다음 요청 시 이 ID를 사용하여 대화 이력 유지)")
     assistant_message: str = Field(description="어시스턴트 자연어 응답")
     actions: List[Dict[str, Any]] = Field(
         default_factory=list,
@@ -111,14 +120,41 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
     LLM 채팅 엔드포인트
 
     - 자연어 질의와 기존 대화 이력을 전달하여 Gemini LLM 응답을 생성합니다.
+    - session_id가 제공되면 Redis에서 대화 이력을 조회하고, 없으면 새 세션을 생성합니다.
     - 응답에는 assistant_message 와 함께 actions 리스트가 포함될 수 있습니다.
+    - 대화 이력은 Redis에 자동 저장되어 페이지 새로고침 후에도 유지됩니다.
     """
     try:
-        # 기존 메시지 + latest_message 를 합쳐서 LLM 입력으로 사용
-        all_messages: List[LLMMessage] = [
-            LLMMessage(role=m.role, content=m.content) for m in request.messages
-        ]
+        # 세션 ID 처리: 없으면 새로 생성, 있으면 Redis에서 이력 조회
+        session_id = request.session_id
+        if not session_id:
+            session_id = chat_session_service.create_session()
+
+        # 대화 이력 조회: session_id가 있으면 Redis에서, 없으면 request.messages 사용
+        if chat_session_service.is_available() and session_id:
+            # Redis에서 대화 이력 조회
+            stored_messages = chat_session_service.get_messages(session_id)
+            if stored_messages:
+                # Redis에 저장된 메시지를 LLMMessage로 변환
+                all_messages: List[LLMMessage] = [
+                    LLMMessage(role=msg.get("role", "user"), content=msg.get("content", ""))
+                    for msg in stored_messages
+                ]
+            else:
+                # Redis에 이력이 없으면 request.messages 사용 (하위 호환성)
+                all_messages = [
+                    LLMMessage(role=m.role, content=m.content) for m in request.messages
+                ]
+        else:
+            # Redis 사용 불가 시 request.messages 사용
+            all_messages = [
+                LLMMessage(role=m.role, content=m.content) for m in request.messages
+            ]
+
+        # latest_message 추가
+        user_message_content = None
         if request.latest_message is not None:
+            user_message_content = request.latest_message.content
             all_messages.append(
                 LLMMessage(
                     role=request.latest_message.role,
@@ -179,7 +215,24 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
                 # 조회 액션 자동 실행 실패는 치명적이지 않으므로, 로그만 남기고 계속 진행
                 print(f"[LLM Chat] 조회 액션 자동 실행 실패: type={action_type}, error={e}")
 
+        # Redis에 대화 이력 저장
+        if user_message_content:
+            chat_session_service.save_message(
+                session_id=session_id,
+                role="user",
+                content=user_message_content,
+            )
+
+        # 어시스턴트 응답 저장 (data 포함)
+        chat_session_service.save_message(
+            session_id=session_id,
+            role="assistant",
+            content=assistant_message,
+            extras={"data": aggregated_data} if aggregated_data else None,
+        )
+
         return ChatResponse(
+            session_id=session_id,
             assistant_message=assistant_message,
             actions=actions_as_dicts,
             data=aggregated_data or None,
@@ -191,6 +244,48 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
         raise HTTPException(
             status_code=500,
             detail=f"LLM 채팅 처리 중 예외 발생: {str(e)}",
+        )
+
+
+@router.post("/llm/session/{session_id}/messages")
+async def get_session_messages(session_id: str) -> Dict[str, Any]:
+    """
+    세션의 대화 이력 조회 엔드포인트
+    
+    - Redis에 저장된 대화 이력을 조회하여 반환합니다.
+    - 프론트엔드에서 페이지 새로고침 후 대화 이력을 복원할 때 사용합니다.
+    """
+    try:
+        messages = chat_session_service.get_messages(session_id)
+        return {
+            "session_id": session_id,
+            "messages": messages,
+            "count": len(messages),
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"세션 이력 조회 중 예외 발생: {str(e)}",
+        )
+
+
+@router.delete("/llm/session/{session_id}")
+async def clear_session(session_id: str) -> Dict[str, Any]:
+    """
+    세션의 대화 이력 삭제 엔드포인트
+    
+    - Redis에 저장된 대화 이력을 삭제합니다.
+    """
+    try:
+        success = chat_session_service.clear_session(session_id)
+        return {
+            "session_id": session_id,
+            "deleted": success,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"세션 삭제 중 예외 발생: {str(e)}",
         )
 
 

@@ -230,19 +230,18 @@ class LLMService:
         url = f"{self.base_url}/{self.config.model_name}:generateContent"
         payload = self._build_gemini_payload(messages=messages, extra_context=extra_context)
 
-        headers = {
-            "Content-Type": "application/json; charset=utf-8",
-        }
         params = {
             "key": self.config.api_key,
         }
 
         try:
+            # json 파라미터를 사용하여 자동으로 JSON 직렬화 및 Content-Type 헤더 설정
+            # ensure_ascii=False는 json.dumps()에서만 사용 가능하므로, 
+            # requests의 json 파라미터는 기본적으로 UTF-8을 지원합니다.
             response = requests.post(
                 url,
-                headers=headers,
                 params=params,
-                data=json.dumps(payload, ensure_ascii=False),
+                json=payload,
                 timeout=self.config.timeout_seconds,
             )
         except requests.RequestException as e:

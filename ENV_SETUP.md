@@ -93,6 +93,57 @@ GEMINI_TIMEOUT_SECONDS=30
 위 값들은 백엔드에서 LLM을 호출할 때만 사용되며,
 VM 이름/스펙/상태 같은 **메타데이터 수준의 정보만** LLM API로 전달되도록 설계할 수 있습니다.
 
+### 6. Redis 설정 (대화 이력 저장)
+
+LLM 채팅의 대화 이력을 영구 저장하기 위한 Redis 설정입니다.
+Redis가 없어도 동작하지만, 페이지 새로고침 시 대화 이력이 사라집니다.
+
+```bash
+# Redis 서버 주소 (선택, 기본값: localhost)
+REDIS_HOST=localhost
+
+# Redis 서버 포트 (선택, 기본값: 6379)
+REDIS_PORT=6379
+
+# Redis 데이터베이스 번호 (선택, 기본값: 0)
+REDIS_DB=0
+
+# Redis 비밀번호 (선택, 비밀번호가 없으면 생략)
+REDIS_PASSWORD=
+
+# 채팅 세션 만료 시간 (초, 선택, 기본값: 604800 = 7일)
+CHAT_SESSION_TTL_SECONDS=604800
+
+# 최대 저장 메시지 수 (선택, 기본값: 100)
+CHAT_MAX_MESSAGES=100
+```
+
+**Redis 설치 방법 (macOS):**
+```bash
+# Homebrew로 설치
+brew install redis
+
+# Redis 서버 시작
+brew services start redis
+# 또는 수동 실행: redis-server
+```
+
+**Redis 설치 방법 (Linux):**
+```bash
+# Ubuntu/Debian
+sudo apt-get update
+sudo apt-get install redis-server
+
+# Redis 서버 시작
+sudo systemctl start redis-server
+sudo systemctl enable redis-server
+```
+
+**Redis 없이 사용:**
+- Redis가 설정되지 않아도 LLM 채팅은 정상 동작합니다.
+- 다만 페이지 새로고침 시 대화 이력이 사라집니다.
+- Redis 연결 실패 시 자동으로 비활성화되고 경고 메시지만 출력됩니다.
+
 ## 🚀 설정 방법
 
 ### 1. 환경 파일 생성
@@ -181,6 +232,7 @@ ssh -i ~/.ssh/id_rsa root@vm-ip
 - [ ] SSH 키 권한 확인 (`chmod 600`)
 - [ ] Proxmox API 연결 테스트 성공
 - [ ] `.env` 파일이 `.gitignore`에 포함되어 있는지 확인
+- [ ] (선택) Redis 설치 및 실행 확인 (대화 이력 영구 저장용)
 
 ## 🆘 문제 해결
 

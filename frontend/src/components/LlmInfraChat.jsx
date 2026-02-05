@@ -1,6 +1,6 @@
-import { useState } from 'react'
-import { Send, Sparkles, Terminal, Play } from 'lucide-react'
-import { llmChat, executeLlmAction } from '../services/api'
+import { useState, useEffect } from 'react'
+import { Send, Sparkles, Terminal, Play, RotateCcw } from 'lucide-react'
+import { llmChat, executeLlmAction, getLlmSessionMessages, clearLlmSession } from '../services/api'
 
 /**
  * LLM 기반 인프라 채팅 컴포넌트
@@ -10,6 +10,11 @@ import { llmChat, executeLlmAction } from '../services/api'
  * - 사용자가 액션을 선택/실행 버튼을 눌렀을 때만 실제 인프라 액션 실행
  */
 function LlmInfraChat() {
+  // 세션 ID를 localStorage에 저장하여 페이지 새로고침 후에도 유지
+  const [sessionId, setSessionId] = useState(() => {
+    return localStorage.getItem('llm_chat_session_id') || null
+  })
+  
   const [messages, setMessages] = useState([
     {
       role: 'assistant',
@@ -22,6 +27,35 @@ function LlmInfraChat() {
   const [isLoading, setIsLoading] = useState(false)
   const [pendingActions, setPendingActions] = useState([])
   const [selectedActionIndex, setSelectedActionIndex] = useState(null)
+  const [isRestoringHistory, setIsRestoringHistory] = useState(false)
+
+  // 페이지 로드 시 세션 이력 복원
+  useEffect(() => {
+    const restoreSessionHistory = async () => {
+      if (!sessionId) return
+
+      setIsRestoringHistory(true)
+      try {
+        const response = await getLlmSessionMessages(sessionId)
+        const data = response.data || response
+        const storedMessages = data.messages || []
+
+        if (storedMessages.length > 0) {
+          // Redis에 저장된 메시지로 복원
+          setMessages(storedMessages)
+        }
+      } catch (error) {
+        console.warn('세션 이력 복원 실패:', error)
+        // 복원 실패 시 세션 ID 초기화
+        localStorage.removeItem('llm_chat_session_id')
+        setSessionId(null)
+      } finally {
+        setIsRestoringHistory(false)
+      }
+    }
+
+    restoreSessionHistory()
+  }, []) // 컴포넌트 마운트 시 한 번만 실행
 
   const addMessage = (role, content, extras = {}) => {
     setMessages((prev) => [...prev, { role, content, ...extras }])
@@ -31,15 +65,19 @@ function LlmInfraChat() {
     const trimmed = input.trim()
     if (!trimmed || isLoading) return
 
-    const userMessage = { role: 'user', content: trimmed }
+    // 입력 필드를 먼저 비워서 UI에 즉시 반영
     setInput('')
+    
+    const userMessage = { role: 'user', content: trimmed }
     addMessage('user', trimmed)
     setIsLoading(true)
 
     try {
-      // 기존 대화 이력을 LLM API에 전달
+      // 세션 ID를 포함하여 LLM API에 전달 (Redis에서 대화 이력 조회)
       const payload = {
-        messages: messages.map((m) => ({
+        session_id: sessionId, // 세션 ID가 있으면 Redis에서 이력 조회
+        messages: sessionId ? [] : messages.map((m) => ({
+          // session_id가 있으면 messages는 무시됨 (하위 호환성을 위해 빈 배열이 아닌 전체 전송도 가능)
           role: m.role,
           content: m.content,
         })),
@@ -49,6 +87,13 @@ function LlmInfraChat() {
 
       const response = await llmChat(payload)
       const data = response.data || response
+
+      // 세션 ID 저장 (새로 생성되었거나 기존 것 유지)
+      const newSessionId = data.session_id || sessionId
+      if (newSessionId && newSessionId !== sessionId) {
+        setSessionId(newSessionId)
+        localStorage.setItem('llm_chat_session_id', newSessionId)
+      }
 
       const assistantMessage = data.assistant_message || 'LLM 응답을 가져오지 못했습니다.'
       const actions = Array.isArray(data.actions) ? data.actions : []
@@ -94,20 +139,61 @@ function LlmInfraChat() {
     }
   }
 
+  const handleClearSession = async () => {
+    if (!sessionId) return
+
+    if (window.confirm('대화 이력을 모두 삭제하시겠습니까?')) {
+      try {
+        await clearLlmSession(sessionId)
+        localStorage.removeItem('llm_chat_session_id')
+        setSessionId(null)
+        setMessages([
+          {
+            role: 'assistant',
+            content:
+              '안녕하세요! Proxmox / Terraform / Ansible 기반 인프라 도우미입니다.\n' +
+              '예: "현재 VM 상태 보여줘", "CPU 4코어, 메모리 8GB로 Ubuntu VM 하나 만들어줘"처럼 요청해 보세요.',
+          },
+        ])
+        setPendingActions([])
+      } catch (error) {
+        console.error('세션 삭제 실패:', error)
+      }
+    }
+  }
+
   return (
     <div className="grid grid-cols-1 lg:grid-cols-[2fr,1fr] gap-6">
       {/* Chat Panel */}
       <div className="flex flex-col bg-white rounded-lg border border-gray-200 shadow-sm">
-        <div className="flex items-center gap-2 px-6 py-4 border-b border-gray-200">
-          <Sparkles className="w-5 h-5 text-purple-500" />
-          <h2 className="text-lg font-semibold text-gray-900">LLM Infra Assistant</h2>
-          <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 border border-purple-100">
-            MVP
-          </span>
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+          <div className="flex items-center gap-2">
+            <Sparkles className="w-5 h-5 text-purple-500" />
+            <h2 className="text-lg font-semibold text-gray-900">LLM Infra Assistant</h2>
+            <span className="ml-2 text-xs px-2 py-0.5 rounded-full bg-purple-50 text-purple-600 border border-purple-100">
+              MVP
+            </span>
+          </div>
+          {sessionId && (
+            <button
+              onClick={handleClearSession}
+              className="flex items-center gap-1 px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-md transition-colors"
+              title="대화 이력 삭제"
+            >
+              <RotateCcw className="w-3 h-3" />
+              초기화
+            </button>
+          )}
         </div>
 
         {/* Messages */}
         <div className="flex-1 px-6 py-4 space-y-4 overflow-y-auto max-h-[520px]">
+          {isRestoringHistory && (
+            <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+              <Terminal className="w-4 h-4 animate-pulse" />
+              <span>이전 대화 이력을 불러오는 중...</span>
+            </div>
+          )}
           {messages.map((msg, idx) => {
             const isUser = msg.role === 'user'
 
@@ -171,6 +257,7 @@ function LlmInfraChat() {
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) {
                   e.preventDefault()
+                  e.stopPropagation()
                   handleSend()
                 }
               }}

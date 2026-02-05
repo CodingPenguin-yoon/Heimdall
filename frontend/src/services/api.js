@@ -256,4 +256,26 @@ export const executeLlmAction = async ({ action }) => {
   }
 }
 
+// LLM 세션 이력 조회 API
+export const getLlmSessionMessages = async (sessionId) => {
+  try {
+    const response = await apiClient.get(`/llm/session/${sessionId}/messages`)
+    return response
+  } catch (error) {
+    console.error('Get LLM Session Messages API error:', error)
+    throw error
+  }
+}
+
+// LLM 세션 삭제 API
+export const clearLlmSession = async (sessionId) => {
+  try {
+    const response = await apiClient.delete(`/llm/session/${sessionId}`)
+    return response
+  } catch (error) {
+    console.error('Clear LLM Session API error:', error)
+    throw error
+  }
+}
+
 export default apiClient
