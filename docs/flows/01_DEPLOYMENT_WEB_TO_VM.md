@@ -42,9 +42,9 @@
 
 프론트엔드는 응답에서 `task_id` 를 받아서 이후 상태/로그 폴링에 사용합니다.
 
-### 3. 백엔드 라우터 처리 (`/api/deploy`)
+### 3. 백엔드 도메인 라우터 처리 (`/api/deploy`)
 
-- **파일**: `backend/app/routes/deploy.py`
+- **파일**: `backend/app/domains/deploy/router.py`
 - **핵심 구성**
   - `DeployRequest` (Pydantic 모델)
   - `DeployResponse` (Pydantic 모델)

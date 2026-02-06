@@ -462,7 +462,7 @@ DeploymentService
 ### 조회 시퀀스 다이어그램
 
 ```
-routes/proxmox.py
+domains/proxmox/router.py
     │
     └─> ProxmoxService.get_nodes()
         └─> Proxmox API 호출

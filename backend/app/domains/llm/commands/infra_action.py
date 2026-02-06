@@ -1,8 +1,10 @@
 """
-인프라 액션 실행 서비스 모듈 (llm 도메인)
+인프라 액션 실행 서비스 모듈 (LLM 도메인 commands 버전)
 
-기존 app.services.infra_action_service 모듈을
-도메인 기준으로 정리하여 이 위치로 이동했습니다.
+배경/의도/목적:
+- 기존 `app.services.llm.infra_action_service.InfraActionService` 구현을
+  도메인 구조 `app.domains.llm.commands.infra_action` 로 옮겨와,
+  LLM 도메인에서 사용하는 인프라 액션 어댑터를 한 곳에 모은다.
 """
 
 from __future__ import annotations

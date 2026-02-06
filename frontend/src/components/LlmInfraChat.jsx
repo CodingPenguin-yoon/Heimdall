@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { Send, Sparkles, Terminal, Play, RotateCcw } from 'lucide-react'
 import { llmChat, executeLlmAction, getLlmSessionMessages, clearLlmSession } from '../services/api'
 
@@ -28,6 +28,10 @@ function LlmInfraChat() {
   const [pendingActions, setPendingActions] = useState([])
   const [selectedActionIndex, setSelectedActionIndex] = useState(null)
   const [isRestoringHistory, setIsRestoringHistory] = useState(false)
+
+  // 채팅 메시지 영역 & 마지막 메시지 DOM 참조
+  const messagesContainerRef = useRef(null)
+  const messagesEndRef = useRef(null)
 
   // 페이지 로드 시 세션 이력 복원
   useEffect(() => {
@@ -60,6 +64,23 @@ function LlmInfraChat() {
   const addMessage = (role, content, extras = {}) => {
     setMessages((prev) => [...prev, { role, content, ...extras }])
   }
+
+  // 새 메시지 추가/복원/로딩 상태 변화 시, 항상 채팅 영역 맨 아래로 스크롤
+  useEffect(() => {
+    // 1단계: 채팅 패널 내부 스크롤을 맨 아래로 이동
+    if (messagesContainerRef.current) {
+      const el = messagesContainerRef.current
+      el.scrollTop = el.scrollHeight
+    }
+
+    // 2단계: 마지막 메시지 요소가 뷰포트 안으로 들어오도록 전체 화면도 따라가게 처리
+    if (messagesEndRef.current) {
+      messagesEndRef.current.scrollIntoView({
+        behavior: 'smooth',
+        block: 'end',
+      })
+    }
+  }, [messages, isLoading, isRestoringHistory])
 
   const handleSend = async () => {
     const trimmed = input.trim()
@@ -187,7 +208,10 @@ function LlmInfraChat() {
         </div>
 
         {/* Messages */}
-        <div className="flex-1 px-6 py-4 space-y-4 overflow-y-auto max-h-[520px]">
+        <div
+          ref={messagesContainerRef}
+          className="flex-1 px-6 py-4 space-y-4 overflow-y-auto max-h-[520px]"
+        >
           {isRestoringHistory && (
             <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
               <Terminal className="w-4 h-4 animate-pulse" />
@@ -210,6 +234,18 @@ function LlmInfraChat() {
             }
 
             const hasVmData = !!msg.data?.vms && Array.isArray(msg.data.vms) && msg.data.vms.length > 0
+            const vmNodeFilter = msg.data?.vm_node_filter || null
+
+            const hasNodeData = !!msg.data?.nodes && Array.isArray(msg.data.nodes) && msg.data.nodes.length > 0
+
+            const hasTemplates =
+              !!msg.data?.templates && Array.isArray(msg.data.templates) && msg.data.templates.length > 0
+            const hasIsoImages =
+              !!msg.data?.iso_images && Array.isArray(msg.data.iso_images) && msg.data.iso_images.length > 0
+            const hasStorages =
+              !!msg.data?.storages && Array.isArray(msg.data.storages) && msg.data.storages.length > 0
+            const hasNetworks =
+              !!msg.data?.networks && Array.isArray(msg.data.networks) && msg.data.networks.length > 0
 
             return (
               <div key={idx} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
@@ -233,7 +269,36 @@ function LlmInfraChat() {
                   {/* VM 목록이 있는 경우: 보기 좋은 카드 + View more */}
                   {hasVmData && (
                     <div className="mt-3">
-                      <VmListPreview vms={msg.data.vms} />
+                      <VmListPreview vms={msg.data.vms} nodeFilter={vmNodeFilter} />
+                    </div>
+                  )}
+
+                  {/* Proxmox 노드 목록 (VM 리스트 카드와 비슷한 표 스타일) */}
+                  {hasNodeData && (
+                    <div className="mt-3">
+                      <NodeListPreview nodes={msg.data.nodes} />
+                    </div>
+                  )}
+
+                  {/* VM 생성 질의응답용 옵션 리스트들 (템플릿 / ISO / 스토리지 / 네트워크) */}
+                  {hasTemplates && (
+                    <div className="mt-3">
+                      <TemplateListPreview templates={msg.data.templates} />
+                    </div>
+                  )}
+                  {hasIsoImages && (
+                    <div className="mt-3">
+                      <IsoImageListPreview isoImages={msg.data.iso_images} />
+                    </div>
+                  )}
+                  {hasStorages && (
+                    <div className="mt-3">
+                      <StorageListPreview storages={msg.data.storages} />
+                    </div>
+                  )}
+                  {hasNetworks && (
+                    <div className="mt-3">
+                      <NetworkListPreview networks={msg.data.networks} />
                     </div>
                   )}
                 </div>
@@ -246,6 +311,8 @@ function LlmInfraChat() {
               <span>모델이 응답을 생성 중입니다...</span>
             </div>
           )}
+          {/* 스크롤 기준이 되는 마지막 앵커 요소 */}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input */}
@@ -255,7 +322,12 @@ function LlmInfraChat() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
+                // 한글/일본어 등 IME 조합 입력 중에는 Enter를 눌러도 전송하지 않도록 방지
+                // (e.nativeEvent.isComposing 이 true 이면 아직 글자가 확정되지 않은 상태)
                 if (e.key === 'Enter' && !e.shiftKey) {
+                  if (e.nativeEvent.isComposing) {
+                    return
+                  }
                   e.preventDefault()
                   e.stopPropagation()
                   handleSend()
@@ -347,55 +419,235 @@ function LlmInfraChat() {
 export default LlmInfraChat
 
 // ---------------------------------------------------------------------------
-// VM 목록 프리뷰 컴포넌트
-// - 상위 5개만 먼저 보여주고, "View more" 버튼으로 전체 토글
+// VM / 노드 목록 프리뷰 컴포넌트
+// - VM: 전체 노드 기준으로 정렬 후 최대 30개까지만 표시 (+ 더 보기 토글)
+// - 특정 노드 조회(list_vms with node): 해당 노드의 VM만 필터링해서 전부 표시
+// - 노드: VM 카드와 비슷한 스타일의 테이블로 표시
 // ---------------------------------------------------------------------------
 
-function VmListPreview({ vms }) {
+function VmListPreview({ vms, nodeFilter }) {
   const [showAll, setShowAll] = useState(false)
 
-  const total = vms.length
-  const displayVms = showAll ? vms : vms.slice(0, 5)
+  // 특정 노드 필터가 있는 경우, 해당 노드의 VM만 사용
+  const normalizedFilter = nodeFilter ? nodeFilter.toString().toLowerCase() : null
+  const baseVms =
+    normalizedFilter
+      ? vms.filter((vm) => (vm.node || '').toString().toLowerCase() === normalizedFilter)
+      : vms
+
+  const total = baseVms.length
+
+  // 일반 "VM 목록" 요청 시에는 최대 30개까지만 표시 (너무 길어지는 것 방지)
+  // 특정 노드 필터가 있을 때는 전체를 다 보여준다.
+  const MAX_DISPLAY = 30
+
+  // 상태/노드/이름 기준으로 정렬
+  const sortedVms = [...baseVms].sort((a, b) => {
+    const aStatus = (a.status || '').toString().toLowerCase()
+    const bStatus = (b.status || '').toString().toLowerCase()
+
+    const aRunning = aStatus === 'running'
+    const bRunning = bStatus === 'running'
+
+    // 1순위: running 먼저
+    if (aRunning !== bRunning) {
+      return aRunning ? -1 : 1
+    }
+
+    // 2순위: 노드 이름
+    const aNode = (a.node || '').toString()
+    const bNode = (b.node || '').toString()
+    if (aNode !== bNode) {
+      return aNode.localeCompare(bNode, 'ko-KR')
+    }
+
+    // 3순위: VM 이름
+    const aName = (a.name || a.vm_id || a.id || '').toString()
+    const bName = (b.name || b.vm_id || b.id || '').toString()
+    return aName.localeCompare(bName, 'ko-KR')
+  })
+
+  const displayVms = normalizedFilter
+    ? sortedVms
+    : sortedVms.slice(0, showAll ? total : MAX_DISPLAY)
+
+  // 노드 기준으로 그룹핑
+  const nodeMap = displayVms.reduce((acc, vm) => {
+    const nodeName = vm.node || '노드 미지정'
+    if (!acc[nodeName]) {
+      acc[nodeName] = []
+    }
+    acc[nodeName].push(vm)
+    return acc
+  }, {})
+
+  const nodeNames = Object.keys(nodeMap).sort((a, b) => a.localeCompare(b, 'ko-KR'))
 
   return (
     <div className="bg-white/70 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
       <div className="font-semibold text-gray-900 flex items-center justify-between">
         <span>Proxmox VM 목록 요약</span>
-        <span className="text-[11px] text-gray-500">{total}개 VM</span>
+        <span className="text-[11px] text-gray-500">
+          {total}개 VM
+          {!normalizedFilter && total > MAX_DISPLAY && !showAll && ` (최대 ${MAX_DISPLAY}개까지만 표시)`}
+        </span>
       </div>
 
-      <ul className="space-y-1">
-        {displayVms.map((vm, idx) => (
-          <li
-            key={vm.vmid || vm.id || `${vm.node}-${idx}`}
-            className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-1 rounded-md bg-gray-50 px-2 py-1.5"
-          >
-            <div className="font-medium text-[13px] text-gray-900">
-              {vm.name || vm.vm_id || vm.id || '이름 없음'}
-              {vm.vmid && <span className="ml-1 text-[11px] text-gray-500">#{vm.vmid}</span>}
-            </div>
-            <div className="flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
-              <span className="px-1.5 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
-                노드: {vm.node || '-'}
-              </span>
-              <StatusPill status={vm.status} />
-              <span>
-                CPU {vm.cpu_cores ?? vm.cpu ?? '-'} · 메모리 {vm.memory_gb ?? vm.memory ?? '-'}GB
-              </span>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {/* 노드별 박스로 묶어서 표시 */}
+      <div className="space-y-3">
+        {nodeNames.map((nodeName) => {
+          const nodeVms = nodeMap[nodeName]
+          return (
+            <div
+              key={nodeName}
+              className="border border-gray-200 rounded-md bg-white/80 shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
+            >
+              <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-gray-100 bg-gray-50/80">
+                <div className="text-[11px] font-semibold text-gray-800">
+                  노드: <span className="text-gray-900">{nodeName}</span>
+                </div>
+                <div className="text-[11px] text-gray-500">{nodeVms.length}개 VM</div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-[11px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-white">
+                      <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">VM 이름</th>
+                      <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                        상태
+                      </th>
+                      <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                        리소스
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nodeVms.map((vm, idx) => (
+                      <tr
+                        key={vm.vmid || vm.id || `${nodeName}-${idx}`}
+                        className="border-t border-gray-100 hover:bg-gray-50/70"
+                      >
+                        <td className="py-1.5 pr-3 align-middle">
+                          <div className="font-medium text-[13px] text-gray-900">
+                            {vm.name || vm.vm_id || vm.id || '이름 없음'}
+                            {vm.vmid && <span className="ml-1 text-[11px] text-gray-500">#{vm.vmid}</span>}
+                          </div>
+                        </td>
+                        <td className="py-1.5 px-3 align-middle whitespace-nowrap">
+                          <StatusPill status={vm.status} />
+                        </td>
+                        <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                          {/* CPU / 메모리 / 디스크 요약 */}
+                          {(() => {
+                            const cpu = vm.cpu_cores ?? vm.cpu ?? '-'
+                            const mem = vm.memory_gb ?? vm.memory ?? '-'
 
-      {total > 5 && (
+                            // ProxmoxService 에서 계산한 총 디스크 용량(disk_gb) 우선 사용
+                            let diskTotal = vm.disk_gb
+                            // 없으면 disks 배열에서 합산
+                            if ((diskTotal == null || Number.isNaN(diskTotal)) && Array.isArray(vm.disks)) {
+                              diskTotal = vm.disks.reduce((sum, d) => {
+                                const size = typeof d.size_gb === 'number' ? d.size_gb : 0
+                                return sum + size
+                              }, 0)
+                            }
+
+                            const diskCount = Array.isArray(vm.disks) ? vm.disks.length : 0
+                            const diskText =
+                              diskTotal && diskTotal > 0
+                                ? ` · 디스크 ${Math.round(diskTotal)}GB${diskCount > 1 ? ` (${diskCount}개)` : ''}`
+                                : ''
+
+                            return (
+                              <>
+                                CPU {cpu} · 메모리 {mem}GB
+                                {diskText}
+                              </>
+                            )
+                          })()}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      {!normalizedFilter && total > MAX_DISPLAY && (
         <button
           type="button"
           onClick={() => setShowAll((prev) => !prev)}
           className="mt-1 inline-flex items-center text-[11px] font-medium text-blue-600 hover:text-blue-700"
         >
-          {showAll ? '상위 5개만 보기' : `나머지 ${total - 5}개 더 보기`}
+          {showAll ? `처음 ${MAX_DISPLAY}개만 보기` : `나머지 ${total - MAX_DISPLAY}개 더 보기`}
         </button>
       )}
+    </div>
+  )
+}
+
+function NodeListPreview({ nodes }) {
+  const items = Array.isArray(nodes) ? nodes : []
+  if (items.length === 0) return null
+
+  // 이름 기준 정렬
+  const sorted = [...items].sort((a, b) => {
+    const aName = (a.name || a.server_name || a.id || '').toString()
+    const bName = (b.name || b.server_name || b.id || '').toString()
+    return aName.localeCompare(bName, 'ko-KR')
+  })
+
+  return (
+    <div className="bg-white/70 border border-gray-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
+      <div className="font-semibold text-gray-900 flex items-center justify-between">
+        <span>Proxmox 노드 목록</span>
+        <span className="text-[11px] text-gray-500">{sorted.length}개 노드</span>
+      </div>
+
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="border-b border-gray-100 bg-white">
+              <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">노드 이름</th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                상태
+              </th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                리소스
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((n, idx) => {
+              const name = n.name || n.server_name || n.id || '이름 없음'
+              const status = n.status || 'unknown'
+              // backend에서는 memory 가 바이트 단위 maxmem 이라 가정하고 GB로 변환 시도
+              let memGb = null
+              if (typeof n.memory === 'number' && n.memory > 0) {
+                memGb = Math.round(n.memory / 1024 / 1024 / 1024)
+              }
+              const cpu = n.cpu ?? 0
+
+              return (
+                <tr key={n.id || name || idx} className="border-t border-gray-100 hover:bg-gray-50/70">
+                  <td className="py-1.5 pr-3 align-middle">
+                    <div className="font-medium text-[12px] text-gray-900">{name}</div>
+                  </td>
+                  <td className="py-1.5 px-3 align-middle whitespace-nowrap">
+                    <StatusPill status={status} />
+                  </td>
+                  <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                    CPU {cpu} · 메모리 {memGb != null ? `${memGb}GB` : '-'}
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   )
 }
@@ -421,3 +673,246 @@ function StatusPill({ status }) {
   )
 }
 
+// ---------------------------------------------------------------------------
+// VM 생성 질의응답용 옵션 리스트 프리뷰 컴포넌트들
+// - 템플릿 / ISO 이미지 / 스토리지 / 네트워크 후보를 간단히 표 형태로 보여줌
+// ---------------------------------------------------------------------------
+
+function TemplateListPreview({ templates }) {
+  const items = Array.isArray(templates) ? templates : []
+  if (items.length === 0) return null
+
+  // 노드 기준으로 그룹핑
+  const nodeMap = items.reduce((acc, t) => {
+    const nodeName = (t.node || '노드 미지정').toString()
+    if (!acc[nodeName]) {
+      acc[nodeName] = []
+    }
+    acc[nodeName].push(t)
+    return acc
+  }, {})
+
+  const nodeNames = Object.keys(nodeMap).sort((a, b) => a.localeCompare(b, 'ko-KR'))
+
+  return (
+    <div className="bg-white/70 border border-purple-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
+      <div className="font-semibold text-gray-900 flex items-center justify-between">
+        <span>VM 템플릿 목록</span>
+        <span className="text-[11px] text-gray-500">{items.length}개 템플릿</span>
+      </div>
+
+      {/* 노드별 박스로 묶어서 표시 (VM 목록 카드와 유사한 구조) */}
+      <div className="space-y-3">
+        {nodeNames.map((nodeName) => {
+          const nodeTemplates = nodeMap[nodeName]
+          return (
+            <div
+              key={nodeName}
+              className="border border-purple-100 rounded-md bg-white/80 shadow-[0_1px_2px_rgba(0,0,0,0.02)]"
+            >
+              <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-purple-50 bg-purple-50/60">
+                <div className="text-[11px] font-semibold text-gray-800">
+                  노드: <span className="text-gray-900">{nodeName}</span>
+                </div>
+                <div className="text-[11px] text-gray-500">{nodeTemplates.length}개 템플릿</div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="min-w-full text-[11px] border-collapse">
+                  <thead>
+                    <tr className="border-b border-gray-100 bg-white">
+                      <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">템플릿 이름</th>
+                      <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                        ID
+                      </th>
+                      <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                        리소스
+                      </th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {nodeTemplates.map((t, idx) => {
+                      const mem = t.memory_gb != null ? Math.round(t.memory_gb) : null
+                      return (
+                        <tr
+                          key={t.template_id || t.id || `${nodeName}-${idx}`}
+                          className="border-t border-gray-100 hover:bg-gray-50/70"
+                        >
+                          <td className="py-1.5 pr-3 align-middle">
+                            <div className="font-medium text-[12px] text-gray-900">
+                              {t.template_name || t.name || '이름 없음'}
+                              {t.vmid && <span className="ml-1 text-[11px] text-gray-500">#{t.vmid}</span>}
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                            {t.template_id || t.id || '-'}
+                          </td>
+                          <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                            CPU {t.cpu_cores ?? '-'} · 메모리 {mem != null ? `${mem}GB` : '-'}
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+
+      <p className="text-[11px] text-gray-500">
+        위 목록에서 원하는 템플릿의 <span className="font-semibold">template_id</span>를 골라서 말씀해 주세요.
+      </p>
+    </div>
+  )
+}
+
+function IsoImageListPreview({ isoImages }) {
+  const items = Array.isArray(isoImages) ? isoImages : []
+  if (items.length === 0) return null
+
+  return (
+    <div className="bg-white/70 border border-indigo-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
+      <div className="font-semibold text-gray-900 flex items-center justify-between">
+        <span>ISO 이미지 목록</span>
+        <span className="text-[11px] text-gray-500">{items.length}개 ISO</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="border-b border-gray-100 bg-white">
+              <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">이름</th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                ID
+              </th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                스토리지 / 크기
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((iso, idx) => (
+              <tr key={iso.iso_id || iso.id || idx} className="border-t border-gray-100 hover:bg-gray-50/70">
+                <td className="py-1.5 pr-3 align-middle">
+                  <div className="font-medium text-[12px] text-gray-900">{iso.iso_name || iso.name || '이름 없음'}</div>
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {iso.iso_id || iso.id || '-'}
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {iso.storage || '-'} · {iso.size_gb ?? '-'}GB
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-500">
+        위 목록에서 사용할 ISO의 <span className="font-semibold">iso_id</span> 또는 이름을 골라서 말씀해 주세요.
+      </p>
+    </div>
+  )
+}
+
+function StorageListPreview({ storages }) {
+  const items = Array.isArray(storages) ? storages : []
+  if (items.length === 0) return null
+
+  return (
+    <div className="bg-white/70 border border-emerald-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
+      <div className="font-semibold text-gray-900 flex items-center justify-between">
+        <span>스토리지 목록</span>
+        <span className="text-[11px] text-gray-500">{items.length}개 스토리지</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="border-b border-gray-100 bg-white">
+              <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">이름</th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                ID
+              </th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                타입 / 용량
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((s, idx) => (
+              <tr key={s.storage_id || s.id || idx} className="border-t border-gray-100 hover:bg-gray-50/70">
+                <td className="py-1.5 pr-3 align-middle">
+                  <div className="font-medium text-[12px] text-gray-900">{s.storage_name || s.name || '이름 없음'}</div>
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {s.storage_id || s.id || '-'}
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {s.type || 'unknown'}
+                  {s.size_gb != null && (
+                    <>
+                      {' '}
+                      · {s.size_gb}GB
+                      {s.available_gb != null && <> (가용 {s.available_gb}GB)</>}
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-500">
+        위 목록에서 사용할 <span className="font-semibold">storage_id</span> 또는 이름을 골라서 말씀해 주세요.
+      </p>
+    </div>
+  )
+}
+
+function NetworkListPreview({ networks }) {
+  const items = Array.isArray(networks) ? networks : []
+  if (items.length === 0) return null
+
+  return (
+    <div className="bg-white/70 border border-sky-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
+      <div className="font-semibold text-gray-900 flex items-center justify-between">
+        <span>네트워크(브리지) 목록</span>
+        <span className="text-[11px] text-gray-500">{items.length}개 네트워크</span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="min-w-full text-[11px] border-collapse">
+          <thead>
+            <tr className="border-b border-gray-100 bg-white">
+              <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">이름</th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                ID
+              </th>
+              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
+                타입 / 정보
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {items.map((n, idx) => (
+              <tr key={n.network_id || n.id || idx} className="border-t border-gray-100 hover:bg-gray-50/70">
+                <td className="py-1.5 pr-3 align-middle">
+                  <div className="font-medium text-[12px] text-gray-900">{n.network_name || n.name || '이름 없음'}</div>
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {n.network_id || n.id || '-'}
+                </td>
+                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
+                  {n.type || 'bridge'}
+                  {n.cidr && <> · {n.cidr}</>}
+                  {n.gateway && <> · GW {n.gateway}</>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[11px] text-gray-500">
+        위 목록에서 사용할 <span className="font-semibold">network_ids</span>(브리지 이름)을 한 개 이상 골라서 말씀해 주세요.
+      </p>
+    </div>
+  )
+}
