@@ -109,17 +109,19 @@ class LLMService:
 - 실제 인프라 변경(생성/삭제/수정)은 직접 수행하지 않고, 반드시 actions 배열에 "제안"만 합니다.
 - 프론트엔드가 사용자의 확인을 받은 뒤 /api/llm/execute-action 으로 액션을 실행합니다.
 
+[응답 형식]
 반드시 아래 JSON 형식으로만 응답하세요:
 {
   "assistant_message": "사용자에게 보여줄 자연어 설명",
   "actions": [
     {
-      "type": "list_vms | create_vm | get_vm_detail | list_nodes | ...",
+      "type": "list_vms | list_nodes | get_vm_detail | create_vm | list_templates | list_iso_images | list_storages | list_networks",
       "description": "이 액션이 수행하는 일을 자연어로 한 줄 요약",
       "params": {
         "server_name": "예시-이름",
         "server_id": "노드/호스트 ID 또는 Proxmox 노드 이름",
-        "template_id": "node/vmid 형식 템플릿 ID",
+        "template_id": "node/vmid 형식 템플릿 ID (템플릿 기반 생성 시)",
+        "iso_image_id": "storage:iso/filename.iso 형식 ISO ID (ISO 기반 설치 시)",
         "cpu_cores": 4,
         "memory_gb": 8,
         "disk_size_gb": 50,
@@ -132,6 +134,45 @@ class LLMService:
 
 - JSON 이외의 텍스트(설명 문장 등)는 assistant_message 안에만 넣어야 합니다.
 - JSON 전체는 하나의 유효한 객체여야 하며, 주석이나 추가 문자열을 포함하면 안 됩니다.
+
+[VM 생성(create_vm) 시 동작 규칙]
+1) 사용자가 "VM 만들어줘", "Ubuntu 하나 대충" 같이 모호하게 요청하면,
+   곧바로 create_vm 액션을 생성하지 말고 다음 정보를 차례대로 물어보세요.
+   - 어느 Proxmox 노드(서버)에 만들지 (필요 시 list_nodes 액션으로 후보를 보여줍니다)
+   - 템플릿으로 클론할지(template_id) 아니면 ISO로 설치할지(iso_image_id)
+     (필요 시 list_templates / list_iso_images 액션으로 후보를 보여줍니다)
+   - CPU 코어 수(cpu_cores), 메모리 용량(memory_gb), 디스크 용량(disk_size_gb)
+   - 어느 스토리지(storage_id)에 둘지 (필요 시 list_storages 액션으로 후보를 보여줍니다)
+   - 어느 네트워크 브리지들(network_ids)에 연결할지 (필요 시 list_networks 액션으로 후보를 보여줍니다)
+
+2) 위 필수 파라미터들이 모두 명확해지기 전까지는
+   - actions 배열에는 create_vm 대신 list_* 형태의 보조 조회 액션들만 넣어
+     사용자가 선택할 수 있는 옵션을 보여주도록 합니다.
+
+   특히 아래 규칙을 지킵니다.
+   - "어느 노드에 만들까요?" 라고 물을 때에는,
+     actions 배열에 반드시 하나의 list_nodes 액션을 포함합니다.
+       예: { "type": "list_nodes", "description": "선택 가능한 Proxmox 노드 목록 조회", "params": {} }
+   - "어떤 템플릿을 사용할까요?" 라고 물을 때에는,
+     actions 배열에 반드시 하나의 list_templates 액션을 포함합니다.
+   - "어떤 ISO로 설치할까요?" 라고 물을 때에는,
+     actions 배열에 반드시 하나의 list_iso_images 액션을 포함합니다.
+   - "어느 스토리지에 둘까요?" 라고 물을 때에는,
+     actions 배열에 반드시 하나의 list_storages 액션을 포함합니다.
+   - "어느 네트워크(브리지)에 연결할까요?" 라고 물을 때에는,
+     actions 배열에 반드시 하나의 list_networks 액션을 포함합니다.
+
+3) 필수 파라미터가 모두 결정된 뒤에만
+   - actions 배열에 단일 create_vm 액션을 넣고,
+   - assistant_message 에서는 "이 설정으로 VM을 생성해도 될지"를 한국어로 요약해 다시 확인합니다.
+   (예: "노드 pve1, 템플릿 ubuntu-22.04, CPU 4, 메모리 8GB, 디스크 50GB, 스토리지 local-lvm, 네트워크 vmbr0 로 VM을 만들까요?")
+
+4) create_vm 액션의 params 에는 백엔드에서 사용하는 키 이름을 그대로 사용합니다:
+   - server_name (선택)
+   - server_id (또는 node 이름)
+   - template_id 또는 iso_image_id (둘 중 하나 이상)
+   - cpu_cores, memory_gb, disk_size_gb, storage_id, network_ids
+
 """.strip()
 
         if context_text:
@@ -180,6 +221,7 @@ class LLMService:
                 raw_text=original_text,
             )
 
+        # 1차: 응답 전체가 코드블록(```json ... ```)인 경우 코드블록 안만 추출
         if text.startswith("```"):
             lines = text.splitlines()
             if lines and lines[0].startswith("```"):
@@ -188,14 +230,47 @@ class LLMService:
                 lines = lines[:-1]
             text = "\n".join(lines).strip()
 
+        # 2차: 본문 어딘가에 ```json ... ``` 코드블록이 섞여 있는 경우,
+        #      코드블록 안의 JSON 부분만 떼어내서 파싱을 시도한다.
+        if "```" in text:
+            parts = text.split("```")
+            # 짝수 인덱스: 코드블록 밖 텍스트, 홀수 인덱스: 코드블록 안
+            # 일반적으로 첫 번째 코드블록(인덱스 1)을 우선 사용
+            for idx, block in enumerate(parts):
+                if idx % 2 == 1:  # 코드블록 내용
+                    # "json\n{ ... }" 형태일 수 있으므로, 첫 줄이 언어 태그면 제거
+                    block_lines = block.splitlines()
+                    if block_lines and block_lines[0].strip().lower().startswith("json"):
+                        block_lines = block_lines[1:]
+                    candidate = "\n".join(block_lines).strip()
+                    if candidate:
+                        text = candidate
+                        break
+
+        # 3차: JSON 파싱 시도
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return LLMChatResult(
-                assistant_message=original_text.strip(),
-                actions=[],
-                raw_text=original_text,
-            )
+            # 4차: 텍스트 안에서 첫 { 와 마지막 } 사이를 잘라 JSON 파싱 재시도
+            start = text.find("{")
+            end = text.rfind("}")
+            if start != -1 and end != -1 and end > start:
+                inner = text[start : end + 1]
+                try:
+                    data = json.loads(inner)
+                    text = inner
+                except json.JSONDecodeError:
+                    return LLMChatResult(
+                        assistant_message=original_text.strip(),
+                        actions=[],
+                        raw_text=original_text,
+                    )
+            else:
+                return LLMChatResult(
+                    assistant_message=original_text.strip(),
+                    actions=[],
+                    raw_text=original_text,
+                )
 
         assistant_message = str(data.get("assistant_message", "")).strip() or text
         raw_actions = data.get("actions", []) or []

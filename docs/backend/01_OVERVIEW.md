@@ -26,36 +26,39 @@
 ```
 backend/
 ├── app/
-│   ├── main.py                  # FastAPI 앱 진입점
-│   ├── routes/                  # API 엔드포인트 정의
-│   │   ├── deploy.py            # 배포 API
-│   │   ├── status.py            # 작업 상태 조회 API
-│   │   ├── logs.py              # 작업 로그 조회 API
-│   │   ├── proxmox.py           # Proxmox 조회/모니터링 API
-│   │   └── llm.py               # LLM 인프라 어시스턴트 API
-│   └── services/                # 도메인별 비즈니스 로직
-│       ├── deployment/          # 배포 도메인
-│       │   └── service.py       # DeploymentService (Terraform+Ansible 통합)
-│       ├── terraform_service.py # Terraform 실행 서비스
-│       ├── ansible/             # Ansible 실행 서비스
-│       │   └── __init__.py      # AnsibleService
-│       ├── proxmox/             # Proxmox 조회/모니터링 서비스
-│       │   └── __init__.py      # ProxmoxService
-│       ├── task/                # 작업 상태/로그 관리
-│       │   └── manager.py       # TaskManager, TaskStatus
-│       └── llm/                 # LLM 및 인프라 액션 도메인
-│           ├── llm_core.py      # Gemini LLM 연동 핵심 로직
-│           ├── service.py       # LLMService 래퍼
+│   ├── main.py                      # FastAPI 앱 진입점 (도메인 라우터 등록)
+│   ├── domains/                     # 도메인별 API 라우터
+│   │   ├── deploy/
+│   │   │   └── router.py            # 배포 API (`POST /api/deploy`)
+│   │   ├── task/
+│   │   │   └── router.py            # 작업 상태/로그 API (`GET /api/status/*`, `/api/logs/*`)
+│   │   ├── proxmox/
+│   │   │   └── router.py            # Proxmox 조회/모니터링 API
+│   │   └── llm/
+│   │       └── router.py            # LLM 인프라 어시스턴트 API
+│   └── services/                    # 도메인별 비즈니스 로직
+│       ├── deployment/              # 배포 도메인
+│       │   └── service.py           # DeploymentService (Terraform+Ansible 통합)
+│       ├── terraform_service.py     # Terraform 실행 서비스
+│       ├── ansible/                 # Ansible 실행 서비스
+│       │   └── __init__.py          # AnsibleService
+│       ├── proxmox/                 # Proxmox 조회/모니터링 서비스
+│       │   └── __init__.py          # ProxmoxService
+│       ├── task/                    # 작업 상태/로그 관리
+│       │   └── manager.py           # TaskManager, TaskStatus
+│       └── llm/                     # LLM 및 인프라 액션 도메인
+│           ├── llm_core.py          # Gemini LLM 연동 핵심 로직
+│           ├── service.py           # LLMService 래퍼
 │           └── infra_action_service.py  # LLM 액션 → 실제 인프라 서비스 매핑
-├── iac/                         # Infrastructure as Code
-│   ├── terraform/               # Terraform 설정 파일 (main.tf 등)
-│   └── ansible/                 # Ansible playbook 및 inventory
-└── requirements.txt             # Python 의존성
+├── iac/                             # Infrastructure as Code
+│   ├── terraform/                   # Terraform 설정 파일 (main.tf 등)
+│   └── ansible/                     # Ansible playbook 및 inventory
+└── requirements.txt                 # Python 의존성
 ```
 
 ## 동작 흐름 (간단 요약)
 
-1. **프론트엔드 요청** → FastAPI 라우터(`routes/*`)가 HTTP 요청 수신
+1. **프론트엔드 요청** → FastAPI 도메인 라우터(`domains/*/router.py`)가 HTTP 요청 수신
 2. **라우터** → 도메인별 서비스(`services/deployment`, `services/proxmox`, `services/llm` 등) 호출
 3. **서비스** → Terraform/Ansible/Proxmox API/LLM 을 호출하여 실제 인프라 작업 수행
 4. **작업 관리** → `TaskManager` 에 상태와 로그를 실시간 저장

@@ -152,12 +152,15 @@ curl http://localhost:8000/
 backend/
 ├── app/
 │   ├── main.py
-│   ├── routes/
-│   │   ├── deploy.py
-│   │   ├── status.py
-│   │   ├── logs.py
-│   │   ├── proxmox.py
-│   │   └── llm.py
+│   ├── domains/
+│   │   ├── deploy/
+│   │   │   └── router.py
+│   │   ├── task/
+│   │   │   └── router.py
+│   │   ├── proxmox/
+│   │   │   └── router.py
+│   │   └── llm/
+│   │       └── router.py
 │   └── services/
 │       ├── deployment/
 │       │   └── service.py

@@ -20,11 +20,11 @@
 
 각 함수는 Axios 클라이언트(`apiClient`) 를 통해 `/api` 프리픽스 하위 엔드포인트를 호출합니다.
 
-### 3. 백엔드 라우터 처리 (`backend/app/routes/proxmox.py`)
+### 3. 백엔드 도메인 라우터 처리 (`backend/app/domains/proxmox/router.py`)
 
-모니터링 관련 엔드포인트는 Proxmox 조회 라우터에 정의되어 있습니다.
+모니터링 관련 엔드포인트는 Proxmox 도메인 라우터에 정의되어 있습니다.
 
-- **파일**: `backend/app/routes/proxmox.py`
+- **파일**: `backend/app/domains/proxmox/router.py`
 - **서비스**: `ProxmoxService` (`backend/app/services/proxmox/__init__.py`)
 
 #### 3-1. 모든 노드 모니터링 (`GET /api/monitoring/nodes`)
@@ -119,7 +119,7 @@ async def get_vm_monitoring(node_id: str, vmid: int):
 1. 사용자: Monitoring 탭에서 노드/VM 선택
 2. 프론트엔드: `getNodesMonitoring` / `getNodeMonitoring` / `getVMMonitoring` API 호출
 3. 백엔드:
-   - `routes/proxmox.py` 모니터링 엔드포인트가 요청 처리
+   - `domains/proxmox/router.py` 모니터링 엔드포인트가 요청 처리
    - `ProxmoxService` 가 Proxmox API 를 호출해 상태/지표 수집
 4. 프론트엔드: 받은 JSON 데이터를 기반으로 그래프/카드 UI 렌더링
 

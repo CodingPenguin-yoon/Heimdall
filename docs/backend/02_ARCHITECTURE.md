@@ -11,9 +11,9 @@
                │ HTTP 요청/응답
                ▼
 ┌─────────────────────────────────────────┐
-│      FastAPI 라우터 (routes/)            │
-│  - deploy.py, status.py, logs.py,        │
-│    proxmox.py, llm.py                   │
+│   FastAPI 도메인 라우터 (domains/*)       │
+│  - deploy/router.py, task/router.py,    │
+│    proxmox/router.py, llm/router.py     │
 └──────────────┬──────────────────────────┘
                │ 서비스 호출
                ▼
@@ -39,18 +39,18 @@
 
 ## 계층별 상세 설명
 
-### 1. 라우터 레이어 (routes/)
+### 1. 라우터 레이어 (도메인 라우터)
 
-**역할**: HTTP 요청을 받아서 적절한 서비스를 호출하고 응답을 반환합니다.
+**역할**: HTTP 요청을 받아서 적절한 도메인 서비스에 위임하고 응답을 반환합니다.
 
 **파일 구조**:
-- `deploy.py`: 배포 시작 API (`POST /api/deploy`)
-- `status.py`: 작업 상태 조회 API (`GET /api/status/{task_id}`)
-- `logs.py`: 작업 로그 조회 API (`GET /api/logs/{task_id}`)
-- `proxmox.py`: Proxmox 리소스 조회 API (`GET /api/servers`, `/api/templates` 등)
+- `domains/deploy/router.py`: 배포 시작 API (`POST /api/deploy`)
+- `domains/task/router.py`: 작업 상태/로그 조회 API (`GET /api/status/{task_id}`, `GET /api/logs/{task_id}`)
+- `domains/proxmox/router.py`: Proxmox 리소스/모니터링 조회 API (`GET /api/servers`, `/api/templates`, `/api/monitoring/*` 등)
+- `domains/llm/router.py`: LLM 인프라 어시스턴트 및 액션 실행 API (`POST /api/llm/chat`, `POST /api/llm/execute-action` 등)
 
 **특징**:
-- FastAPI의 `APIRouter`를 사용하여 모듈화
+- FastAPI의 `APIRouter`를 사용하여 도메인별로 모듈화
 - Pydantic 모델로 요청/응답 데이터 검증
 - 예외 처리 및 HTTP 상태 코드 반환
 
@@ -142,7 +142,7 @@
 1. 프론트엔드 → POST /api/deploy
    └─> DeployRequest 모델로 데이터 검증
 
-2. routes/deploy.py → deploy() 함수
+2. domains/deploy/router.py → deploy() 엔드포인트
    └─> DeploymentService.start_deployment_with_request() 호출
 
 3. DeploymentService
@@ -171,7 +171,7 @@
 
 ```
 1. 프론트엔드 → GET /api/servers
-   └─> routes/proxmox.py → get_servers()
+   └─> domains/proxmox/router.py → get_servers()
 
 2. ProxmoxService.get_nodes()
    └─> _make_request("/nodes") - Proxmox API 호출

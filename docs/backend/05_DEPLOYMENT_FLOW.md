@@ -46,8 +46,8 @@ DeploymentService 시작
 ```
 
 **처리 과정**:
-1. `routes/deploy.py`의 `deploy()` 함수가 요청 수신
-2. Pydantic 모델로 데이터 검증
+1. `backend/app/domains/deploy/router.py` 의 `deploy()` 엔드포인트가 요청 수신
+2. Pydantic 모델(`DeployRequest`)로 데이터 검증
 3. `DeploymentService.start_deployment_with_request()` 호출
 
 ---
@@ -344,7 +344,7 @@ task_manager.append_log(task_id, "\n=== 배포 작업 완료 ===")
 **엔드포인트**: `GET /api/status/{task_id}`
 
 **처리 과정**:
-1. `routes/status.py`의 `get_status()` 함수가 요청 수신
+1. `backend/app/domains/task/router.py` 의 `get_status()` 엔드포인트가 요청 수신
 2. `TaskManager.get_status(task_id)` 호출
 3. 메모리에서 작업 상태 조회
 4. 상태 정보 반환
@@ -364,7 +364,7 @@ task_manager.append_log(task_id, "\n=== 배포 작업 완료 ===")
 **엔드포인트**: `GET /api/logs/{task_id}`
 
 **처리 과정**:
-1. `routes/logs.py`의 `get_logs()` 함수가 요청 수신
+1. `backend/app/domains/task/router.py` 의 `get_logs()` 엔드포인트가 요청 수신
 2. 작업 존재 여부 확인
 3. `TaskManager.get_logs(task_id)` 호출
 4. 누적된 모든 로그 반환

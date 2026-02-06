@@ -91,8 +91,8 @@ Proxmox 가상화 환경을 웹 기반으로 관리할 수 있는 통합 플랫�
 #### 🔍 조회 (Proxmox API 직접 사용)
 - **용도**: 리소스 정보 조회 (서버, 템플릿, 스토리지, 네트워크, VM 목록)
 - **방식**: Proxmox API 직접 호출
-- **서비스**: `proxmox_service.py`
-- **라우트**: `routes/proxmox.py`
+- **서비스**: `backend/app/services/proxmox/__init__.py`
+- **도메인 라우터**: `backend/app/domains/proxmox/router.py`
 - **장점**: 
   - 빠른 응답 시간
   - 실시간 데이터
@@ -102,8 +102,8 @@ Proxmox 가상화 환경을 웹 기반으로 관리할 수 있는 통합 플랫�
 #### ⚙️ 제어 (Terraform 사용)
 - **용도**: 리소스 생성/수정/삭제 (VM 생성, 설정 변경 등)
 - **방식**: Terraform IaC (Infrastructure as Code)
-- **서비스**: `terraform_service.py`, `deployment_service.py`
-- **라우트**: `routes/deploy.py`
+- **서비스**: `backend/app/services/terraform_service.py`, `backend/app/services/deployment/service.py`
+- **도메인 라우터**: `backend/app/domains/deploy/router.py`
 - **장점**:
   - 코드로 관리 (버전 관리, 추적 가능)
   - 안전성 (plan으로 변경사항 미리 확인)
@@ -216,34 +216,45 @@ npm run dev
 
 ```
 proxmox_web/
-├── backend/                      # FastAPI 백엔드
+├── backend/                          # FastAPI 백엔드
 │   ├── app/
-│   │   ├── main.py              # FastAPI 앱 진입점
-│   │   │                        # - CORS 설정
-│   │   │                        # - 라우트 등록
-│   │   │                        # - 환경 변수 로드
-│   │   ├── routes/              # API 라우트 모듈
-│   │   │   ├── __init__.py
-│   │   │   ├── deploy.py        # POST /api/deploy - 배포 시작
-│   │   │   ├── status.py        # GET /api/status/{task_id} - 상태 조회
-│   │   │   ├── logs.py          # GET /api/logs/{task_id} - 로그 조회
-│   │   │   └── proxmox.py       # GET /api/* - Proxmox 리소스 조회
-│   │   └── services/            # 비즈니스 로직 서비스
+│   │   ├── main.py                  # FastAPI 앱 진입점
+│   │   │                            # - CORS 설정
+│   │   │                            # - 도메인 라우터 등록
+│   │   │                            # - 환경 변수 로드
+│   │   ├── domains/                 # 도메인 기반 API 라우트 모듈
+│   │   │   ├── deploy/
+│   │   │   │   └── router.py        # POST /api/deploy - 배포 시작
+│   │   │   ├── task/
+│   │   │   │   └── router.py        # GET /api/status/{task_id}, /api/logs/{task_id}
+│   │   │   ├── proxmox/
+│   │   │   │   └── router.py        # GET /api/* - Proxmox 리소스/모니터링 조회
+│   │   │   └── llm/
+│   │   │       └── router.py        # LLM 인프라 어시스턴트/InfraAction API
+│   │   └── services/                # 비즈니스 로직 서비스
 │   │       ├── __init__.py
-│   │       ├── task_manager.py  # 작업 상태 관리 (메모리 기반)
-│   │       ├── terraform_service.py  # Terraform 실행 서비스
-│   │       ├── ansible_service.py    # Ansible 실행 서비스
-│   │       ├── deployment_service.py # 배포 통합 서비스
-│   │       └── proxmox_service.py    # Proxmox API 연동 서비스
-│   ├── iac/                     # Infrastructure as Code
-│   │   ├── terraform/           # Terraform 설정 파일
-│   │   │   ├── main.tf         # Proxmox Provider 설정
-│   │   │   └── variables.tf    # 변수 정의
-│   │   └── ansible/             # Ansible Playbook
-│   │       ├── playbook.yml    # 메인 Playbook
+│   │       ├── deployment/          # 배포 도메인
+│   │       │   └── service.py
+│   │       ├── terraform_service.py # Terraform 실행 서비스
+│   │       ├── ansible/             # Ansible 실행 서비스
+│   │       │   └── __init__.py
+│   │       ├── proxmox/             # Proxmox API 연동 서비스
+│   │       │   └── __init__.py
+│   │       ├── task/                # 작업 상태 관리 (메모리 기반)
+│   │       │   └── manager.py
+│   │       └── llm/                 # LLM 및 인프라 액션 도메인
+│   │           ├── llm_core.py
+│   │           ├── service.py
+│   │           └── infra_action_service.py
+│   ├── iac/                         # Infrastructure as Code
+│   │   ├── terraform/               # Terraform 설정 파일
+│   │   │   ├── main.tf             # Proxmox Provider 설정
+│   │   │   └── variables.tf        # 변수 정의
+│   │   └── ansible/                # Ansible Playbook
+│   │       ├── playbook.yml        # 메인 Playbook
 │   │       └── inventory.yml.example  # Inventory 예제
-│   ├── requirements.txt         # Python 의존성
-│   └── README.md                # 백엔드 README
+│   ├── requirements.txt             # Python 의존성
+│   └── README.md                    # 백엔드 README
 ├── frontend/                    # React 프론트엔드
 │   ├── src/
 │   │   ├── App.jsx             # 메인 앱 컴포넌트

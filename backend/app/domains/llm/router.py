@@ -1,5 +1,5 @@
 """
-LLM 기반 인프라 어시스턴트 API 라우트 모듈
+LLM 기반 인프라 어시스턴트 API 라우트 (llm 도메인)
 
 이 모듈은 자연어 채팅을 처리하고, LLM이 제안한 인프라 액션을
 실제 Proxmox / Terraform / Ansible 서비스로 연결하는 엔드포인트를 제공합니다.
@@ -17,15 +17,20 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel, Field
 
-from app.services.llm.chat_session import ChatSessionService
-from app.services.llm.infra_action_service import (
+from app.domains.llm.commands.chat_session import ChatSessionService
+from app.domains.llm.commands.infra_action import (
     InfraAction,
     InfraActionResult,
     InfraActionService,
 )
-from app.services.llm.service import LLMMessage, LLMService
+from app.domains.llm.service import LLMMessage, LLMService
+from .schemas import (
+    ChatRequest,
+    ChatResponse,
+    ExecuteActionRequest,
+    ExecuteActionResponse,
+)
 
 
 router = APIRouter()
@@ -34,84 +39,6 @@ router = APIRouter()
 llm_service = LLMService()
 infra_action_service = InfraActionService()
 chat_session_service = ChatSessionService()
-
-
-class ChatMessage(BaseModel):
-    """프론트엔드에서 전달하는 단일 채팅 메시지 모델"""
-
-    role: str = Field(description="메시지 역할 (user | assistant)")
-    content: str = Field(description="메시지 내용")
-
-
-class ChatRequest(BaseModel):
-    """
-    LLM 채팅 요청 모델
-
-    - session_id: 채팅 세션 ID (선택적, 없으면 새로 생성)
-    - messages: 기존 대화 이력 (system 제외, session_id가 있으면 무시됨)
-    - latest_message: 이번에 새로 보낸 사용자 메시지(선택)
-    - context: 선택적 인프라 컨텍스트 (예: 현재 선택된 클러스터/프로젝트 정보)
-    """
-
-    session_id: Optional[str] = Field(
-        default=None,
-        description="채팅 세션 ID (Redis에 저장된 대화 이력을 조회하기 위해 사용)",
-    )
-    messages: List[ChatMessage] = Field(
-        default_factory=list,
-        description="기존 대화 이력 (session_id가 없을 때만 사용, session_id가 있으면 Redis에서 조회)",
-    )
-    latest_message: Optional[ChatMessage] = Field(
-        default=None,
-        description="이번 요청에서 새로 보낸 메시지 (일반적으로 role=user)",
-    )
-    context: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="선택적 인프라 컨텍스트 정보 (노드/VM 요약 등)",
-    )
-
-
-class ChatResponse(BaseModel):
-    """LLM 채팅 응답 모델
-
-    - session_id: 채팅 세션 ID (Redis에 대화 이력이 저장됨)
-    - assistant_message: 자연어 응답
-    - actions: 제안된 액션 목록
-    - data: 일부 조회 액션(list_vms, list_nodes 등)을 자동 실행한 결과 JSON
-    """
-
-    session_id: str = Field(description="채팅 세션 ID (다음 요청 시 이 ID를 사용하여 대화 이력 유지)")
-    assistant_message: str = Field(description="어시스턴트 자연어 응답")
-    actions: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description="LLM이 제안한 인프라 액션 목록 (type/description/params 포함)",
-    )
-    data: Optional[Dict[str, Any]] = Field(
-        default=None,
-        description="자동 실행된 조회 액션 결과 (예: {'vms': [...], 'nodes': [...]})",
-    )
-
-
-class ExecuteActionRequest(BaseModel):
-    """
-    인프라 액션 실행 요청 모델
-
-    프론트엔드는 /api/llm/chat 응답의 actions 중 하나를 그대로 넘겨주면 됩니다.
-    """
-
-    action: Dict[str, Any] = Field(
-        description="실행할 액션 객체 (type, description, params 포함)",
-    )
-
-
-class ExecuteActionResponse(BaseModel):
-    """인프라 액션 실행 응답 모델"""
-
-    result_message: str = Field(description="사용자에게 보여줄 결과 메시지")
-    raw_result: Any = Field(
-        default=None,
-        description="원본 결과 데이터 (디버깅/추가 표시용)",
-    )
 
 
 @router.post("/llm/chat", response_model=ChatResponse)
@@ -184,9 +111,22 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
         # 조회(read-only) 액션은 서버에서 한 번 자동 실행하여
         # - assistant_message 뒤에 요약을 붙이고
         # - data 필드에 JSON(raw_result)로 포함시킨다.
+        #
+        # VM 생성 질의응답(슬롯 채우기)을 위해 추가된 보조 액션들도
+        # 여기서 자동 실행하여 템플릿/ISO/스토리지/네트워크 옵션을
+        # LLM 응답과 함께 프론트로 전달한다.
         # ------------------------------------------------------------------
-        SAFE_AUTO_ACTION_TYPES = {"list_vms", "list_nodes", "get_vm_detail"}
+        SAFE_AUTO_ACTION_TYPES = {
+            "list_vms",
+            "list_nodes",
+            "get_vm_detail",
+            "list_templates",
+            "list_iso_images",
+            "list_storages",
+            "list_networks",
+        }
         aggregated_data: Dict[str, Any] = {}
+        vm_node_filter: Optional[str] = None
 
         for action_dict in actions_as_dicts:
             action_type = action_dict.get("type")
@@ -199,21 +139,39 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
                     description=action_dict.get("description"),
                     params=action_dict.get("params") or {},
                 )
+
+                # list_vms 액션에 특정 노드 파라미터가 지정된 경우(node/server_id/server_name),
+                # 프론트엔드에서 해당 노드만 필터링해서 보여줄 수 있도록
+                # 별도의 vm_node_filter 메타데이터로 저장한다.
+                if action_type == "list_vms":
+                    params = action_dict.get("params") or {}
+                    # LLM 프롬프트에서는 Proxmox 노드를 server_id/server_name 으로
+                    # 넘길 수 있으므로, 세 필드를 모두 확인하여 우선순위로 선택한다.
+                    node_value = (
+                        params.get("node")
+                        or params.get("server_id")
+                        or params.get("server_name")
+                    )
+                    if isinstance(node_value, str) and node_value.strip():
+                        vm_node_filter = node_value.strip()
+
                 exec_result: InfraActionResult = infra_action_service.execute_action(
                     action=action_model,
                     background_tasks=None,
                 )
-
-                # 자연어 응답 뒤에 조회 결과 요약을 추가
-                assistant_message += f"\n\n[자동 실행 결과]\n{exec_result.result_message}"
-
-                # raw_result 를 data 필드에 병합 (vms, nodes 등)
+                # raw_result 를 data 필드에 병합 (vms, nodes, templates 등)
                 if isinstance(exec_result.raw_result, dict):
                     for key, value in exec_result.raw_result.items():
                         aggregated_data[key] = value
             except Exception as e:
                 # 조회 액션 자동 실행 실패는 치명적이지 않으므로, 로그만 남기고 계속 진행
                 print(f"[LLM Chat] 조회 액션 자동 실행 실패: type={action_type}, error={e}")
+
+        # 특정 노드에 대한 VM 조회(list_vms with node)가 있었다면,
+        # data에 vm_node_filter 메타데이터를 추가하여 프론트엔드가 해당 노드만
+        # 필터링해 표시할 수 있도록 한다.
+        if vm_node_filter:
+            aggregated_data["vm_node_filter"] = vm_node_filter
 
         # Redis에 대화 이력 저장
         if user_message_content:
@@ -251,7 +209,7 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
 async def get_session_messages(session_id: str) -> Dict[str, Any]:
     """
     세션의 대화 이력 조회 엔드포인트
-    
+
     - Redis에 저장된 대화 이력을 조회하여 반환합니다.
     - 프론트엔드에서 페이지 새로고침 후 대화 이력을 복원할 때 사용합니다.
     """
@@ -273,7 +231,7 @@ async def get_session_messages(session_id: str) -> Dict[str, Any]:
 async def clear_session(session_id: str) -> Dict[str, Any]:
     """
     세션의 대화 이력 삭제 엔드포인트
-    
+
     - Redis에 저장된 대화 이력을 삭제합니다.
     """
     try:
@@ -336,4 +294,7 @@ async def execute_llm_action(
             status_code=500,
             detail=f"인프라 액션 실행 중 예외 발생: {str(e)}",
         )
+
+
+__all__ = ["router"]
 

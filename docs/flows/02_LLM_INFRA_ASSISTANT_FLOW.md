@@ -35,9 +35,9 @@
 }
 ```
 
-### 3. 백엔드 LLM 라우터 처리 (`/api/llm/chat`)
+### 3. 백엔드 LLM 도메인 라우터 처리 (`/api/llm/chat`)
 
-- **파일**: `backend/app/routes/llm.py`
+- **파일**: `backend/app/domains/llm/router.py`
 - **핵심 모델**
   - `ChatMessage`, `ChatRequest`, `ChatResponse`
   - `LLMMessage`, `LLMService` (`backend/app/services/llm/service.py`)
@@ -123,7 +123,7 @@
 
 ### 6. 백엔드 InfraAction 실행 (`/api/llm/execute-action`)
 
-- **파일**: `backend/app/routes/llm.py`
+- **파일**: `backend/app/domains/llm/router.py`
 - **모델/서비스**
   - `InfraAction`, `InfraActionType`, `InfraActionService`  
     - 위치: `backend/app/services/llm/infra_action_service.py`

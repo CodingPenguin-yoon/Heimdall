@@ -14,25 +14,39 @@ Terraform과 Ansible을 제어하는 FastAPI 백엔드 서버입니다.
 ```
 backend/
 ├── app/
-│   ├── main.py                 # FastAPI 애플리케이션 진입점
-│   ├── routes/                 # API 라우트
-│   │   ├── deploy.py           # POST /api/deploy
-│   │   ├── status.py           # GET /api/status/{task_id}
-│   │   └── logs.py             # GET /api/logs/{task_id}
-│   └── services/               # 비즈니스 로직
-│       ├── task_manager.py     # 작업 상태 관리
-│       ├── terraform_service.py # Terraform 실행 서비스
-│       ├── ansible_service.py  # Ansible 실행 서비스
-│       └── deployment_service.py # 배포 통합 서비스
+│   ├── main.py                     # FastAPI 애플리케이션 진입점 (도메인 라우터 등록)
+│   ├── domains/                    # 도메인별 API 라우터
+│   │   ├── deploy/
+│   │   │   └── router.py           # 배포 API (`POST /api/deploy`)
+│   │   ├── task/
+│   │   │   └── router.py           # 작업 상태/로그 API (`GET /api/status/*`, `/api/logs/*`)
+│   │   ├── proxmox/
+│   │   │   └── router.py           # Proxmox 조회/모니터링 API
+│   │   └── llm/
+│   │       └── router.py           # LLM 인프라 어시스턴트 API
+│   └── services/                   # 비즈니스 로직
+│       ├── deployment/
+│       │   └── service.py          # DeploymentService (Terraform+Ansible 통합)
+│       ├── terraform_service.py    # Terraform 실행 서비스
+│       ├── ansible/
+│       │   └── __init__.py         # Ansible 실행 서비스
+│       ├── proxmox/
+│       │   └── __init__.py         # Proxmox 조회/모니터링 서비스
+│       ├── task/
+│       │   └── manager.py          # TaskManager, TaskStatus
+│       └── llm/                    # LLM 및 인프라 액션 도메인
+│           ├── llm_core.py         # Gemini LLM 연동 핵심 로직
+│           ├── service.py          # LLMService 래퍼
+│           └── infra_action_service.py  # LLM 액션 → 실제 인프라 서비스 매핑
 ├── iac/
-│   ├── terraform/              # Terraform 설정 파일
-│   │   ├── main.tf             # Proxmox Provider 설정
-│   │   └── variables.tf        # 변수 정의
-│   └── ansible/                # Ansible Playbook
-│       ├── playbook.yml        # 메인 Playbook
-│       └── inventory.yml.example # Inventory 예제
-├── requirements.txt            # Python 의존성
-└── .env.example                # 환경변수 예제
+│   ├── terraform/                  # Terraform 설정 파일
+│   │   ├── main.tf                 # Proxmox Provider 설정
+│   │   └── variables.tf            # 변수 정의 (있는 경우)
+│   └── ansible/                    # Ansible Playbook
+│       ├── playbook.yml            # 메인 Playbook
+│       └── inventory.yml.example   # Inventory 예제
+├── requirements.txt                # Python 의존성
+└── .env.example                    # 환경변수 예제
 ```
 
 ## 설치 및 실행
