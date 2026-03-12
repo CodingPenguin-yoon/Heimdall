@@ -10,14 +10,14 @@ import os
 import yaml
 from pathlib import Path
 from typing import Optional, Dict, List
-from app.services.task.manager import task_manager, TaskStatus
+from app.services.task.manager import task_manager
 
 
 class AnsibleService:
     """
     Ansible Playbook 실행을 담당하는 서비스 클래스
     
-    /iac/ansible 디렉토리 내의 playbook.yml 파일을 대상으로
+    /infra/ansible 디렉토리 내의 playbook.yml 파일을 대상으로
     ansible-playbook 명령어를 실행합니다.
     """
     
@@ -26,14 +26,16 @@ class AnsibleService:
         초기화
         
         Args:
-            ansible_dir: Ansible 작업 디렉토리 경로 (기본값: 프로젝트 루트/iac/ansible)
+            ansible_dir: Ansible 작업 디렉토리 경로 (기본값: 프로젝트 루트/infra/ansible)
         """
         if ansible_dir:
             self.ansible_dir = Path(ansible_dir)
         else:
-            # 프로젝트 루트 기준으로 iac/ansible 경로 설정
-            project_root = Path(__file__).parent.parent.parent
-            self.ansible_dir = project_root / "iac" / "ansible"
+            # 프로젝트 루트 기준 infra/ansible 경로 설정
+            # __file__ = backend/app/services/ansible/__init__.py
+            # parents[4] = repo root
+            repo_root = Path(__file__).resolve().parents[4]
+            self.ansible_dir = repo_root / "infra" / "ansible"
         
         # 디렉토리 존재 여부 확인
         if not self.ansible_dir.exists():
@@ -142,17 +144,10 @@ class AnsibleService:
             # 추가 변수 처리 (-e 옵션)
             if extra_vars:
                 import json
-                # 리스트나 딕셔너리는 JSON 문자열로 변환
-                formatted_vars = {}
-                for k, v in extra_vars.items():
-                    if isinstance(v, (list, dict)):
-                        formatted_vars[k] = json.dumps(v)
-                    else:
-                        formatted_vars[k] = v
-                
-                # Ansible extra_vars 형식으로 변환
-                vars_str = " ".join([f"{k}={json.dumps(v) if isinstance(v, (list, dict)) else v}" for k, v in formatted_vars.items()])
-                command.extend(["-e", vars_str])
+                # 전체 extra_vars를 JSON 문자열로 전달
+                # Ansible은 -e '{"key": ["val1", "val2"]}' 형식을 인식함
+                vars_json = json.dumps(extra_vars)
+                command.extend(["-e", vars_json])
             
             if task_id:
                 task_manager.append_log(task_id, f"실행 명령어: {' '.join(command)}")
@@ -197,4 +192,3 @@ class AnsibleService:
             if task_id:
                 task_manager.append_log(task_id, f"EXCEPTION: {error_msg}")
             return False, error_msg
-

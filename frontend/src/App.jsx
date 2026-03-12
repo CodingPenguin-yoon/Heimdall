@@ -1,121 +1,86 @@
 import { useState } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import CreateInstanceWizard from './components/CreateInstanceWizard'
-import ControlCenter from './components/ControlCenter'
 import InstanceList from './components/InstanceList'
 import MonitoringDashboard from './components/MonitoringDashboard'
-import StatusPanel from './components/StatusPanel'
-import LogViewer from './components/LogViewer'
 import LlmInfraChat from './components/LlmInfraChat'
-import { Server, List, Plus, Activity, Sparkles } from 'lucide-react'
-import { deployInfrastructure, checkStatus, getLogs } from './services/api'
+import TaskBoard from './components/TaskBoard'
+import { Server, List, Plus, Activity, Sparkles, Clock3 } from 'lucide-react'
+import { deployInfrastructure, checkIpAvailability } from './services/api'
+
+const createInitialDeployConfig = () => ({
+  selectedServerId: '',
+  selectedTemplateId: '',
+  cpuCores: '',
+  memory: '',
+  selectedStorageId: '',
+  selectedNetworkIds: [],
+  serverName: '',
+  selectedPackages: [],
+  selectedRoles: [],
+  ipMode: 'dhcp',
+  vmIp: '',
+  vmGateway: '',
+  ipChecked: null,
+})
 
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
   const activeTab = location.pathname === '/' ? 'create' : location.pathname.replace('/', '')
-  const [deployConfig, setDeployConfig] = useState({
-    selectedServerId: '',
-    selectedTemplateId: '',
-    cpuCores: '',
-    memory: '',
-    selectedStorageId: '',
-    selectedNetworkIds: [],
-    serverName: '',
-    selectedPackages: [],
-    selectedRoles: [],
-  })
+  const [deployConfig, setDeployConfig] = useState(createInitialDeployConfig)
   const [status, setStatus] = useState('idle')
   const [logs, setLogs] = useState([])
+  const [createMessage, setCreateMessage] = useState(null)
+  const [deployingRequest, setDeployingRequest] = useState(false)
 
   const addLog = (message, type = 'info') => {
     const timestamp = new Date().toLocaleTimeString()
     setLogs((prev) => [...prev, { timestamp, message, type }])
   }
 
-  const startPolling = async (taskId) => {
-    let lastLogCount = 0
-    
-    const pollInterval = setInterval(async () => {
-      try {
-        // 상태 확인
-        const statusResponse = await checkStatus(taskId)
-        const currentStatus = statusResponse.data?.status || statusResponse.status
-
-        // 로그 조회 및 업데이트
-        try {
-          const logsResponse = await getLogs(taskId)
-          const logs = logsResponse.data?.logs || []
-          
-          // 새로운 로그만 추가
-          if (logs.length > lastLogCount) {
-            const newLogs = logs.slice(lastLogCount)
-            newLogs.forEach((logLine) => {
-              // 로그 타입 판단 (ERROR, EXCEPTION 등 키워드 기반)
-              let logType = 'info'
-              if (logLine.includes('ERROR') || logLine.includes('EXCEPTION') || logLine.includes('실패')) {
-                logType = 'error'
-              } else if (logLine.includes('경고') || logLine.includes('WARNING')) {
-                logType = 'warning'
-              } else if (logLine.includes('완료') || logLine.includes('SUCCESS')) {
-                logType = 'success'
-              }
-              
-              // 타임스탬프 제거 (이미 포함되어 있음)
-              const message = logLine.replace(/^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] /, '')
-              addLog(message, logType)
-            })
-            lastLogCount = logs.length
-          }
-        } catch (logError) {
-          // 로그 조회 실패는 무시 (상태는 계속 확인)
-          console.warn('Log fetch error:', logError)
-        }
-
-        // 상태 업데이트
-        if (currentStatus === 'Success' || currentStatus === 'success' || currentStatus === 'completed') {
-          clearInterval(pollInterval)
-          setStatus('success')
-          addLog('Deployment completed successfully!', 'success')
-        } else if (currentStatus === 'Failed' || currentStatus === 'failed' || currentStatus === 'error') {
-          clearInterval(pollInterval)
-          setStatus('failed')
-          addLog('Deployment failed!', 'error')
-        } else {
-          setStatus(currentStatus.toLowerCase())
-        }
-      } catch (error) {
-        addLog(`Polling error: ${error.message}`, 'error')
-        clearInterval(pollInterval)
-        setStatus('error')
-      }
-    }, 2000) // 2초 간격으로 폴링 (더 빠른 실시간 업데이트)
-
-    // 최대 10분 후 타임아웃
-    setTimeout(() => {
-      clearInterval(pollInterval)
-    }, 600000)
-  }
-
   const handleDeploy = async () => {
-    if (
-      !deployConfig.selectedServerId ||
-      !deployConfig.selectedStorageId ||
-      !deployConfig.selectedNetworkIds?.length ||
-      (!deployConfig.selectedTemplateId && (!deployConfig.cpuCores || !deployConfig.memory))
-    ) {
-      addLog('Please complete all steps before deploying', 'error')
+    if (deployingRequest) {
       return
     }
 
+    setCreateMessage(null)
+
+    if (
+      !deployConfig.selectedServerId ||
+      !deployConfig.selectedTemplateId ||
+      !deployConfig.selectedStorageId ||
+      !deployConfig.selectedNetworkIds?.length
+    ) {
+      setCreateMessage({
+        type: 'error',
+        text: '서버, 템플릿, 스토리지, 네트워크를 모두 선택한 뒤 Launch를 실행해 주세요.',
+      })
+      return
+    }
+
+    setDeployingRequest(true)
     setStatus('deploying')
-    addLog('Starting deployment...', 'info')
+    addLog('Starting deployment request...', 'info')
 
     try {
+      if (deployConfig.ipMode === 'static' && deployConfig.vmIp) {
+        const ipOnly = deployConfig.vmIp.split('/')[0]
+        const ipCheckResponse = await checkIpAvailability(ipOnly)
+
+        if (ipCheckResponse.data?.in_use) {
+          setStatus('error')
+          setCreateMessage({
+            type: 'error',
+            text: `IP ${ipOnly} 는 이미 사용중입니다. 다른 IP를 선택해 주세요.`,
+          })
+          return
+        }
+      }
+
       const response = await deployInfrastructure({
         server_id: deployConfig.selectedServerId,
         template_id: deployConfig.selectedTemplateId || undefined,
-        iso_image_id: deployConfig.selectedISOImageId || undefined,
         cpu_cores: deployConfig.cpuCores ? parseInt(deployConfig.cpuCores) : undefined,
         memory_gb: deployConfig.memory ? parseInt(deployConfig.memory) : undefined,
         storage_id: deployConfig.selectedStorageId,
@@ -123,6 +88,9 @@ function App() {
         server_name: deployConfig.serverName || `instance-${Date.now()}`,
         ansible_packages: deployConfig.selectedPackages || [],
         ansible_roles: deployConfig.selectedRoles || [],
+        // Static IP 모드일 때만 IP 전달
+        vm_ip: deployConfig.ipMode === 'static' ? deployConfig.vmIp : undefined,
+        vm_gateway: deployConfig.ipMode === 'static' ? deployConfig.vmGateway : undefined,
       })
       const taskId = response.data?.task_id || response.data?.id
 
@@ -131,13 +99,29 @@ function App() {
       }
 
       addLog(`Deployment initiated. Task ID: ${taskId}`, 'success')
-      addLog('Starting real-time log polling...', 'info')
+      setCreateMessage({
+        type: 'success',
+        text: '배포 작업이 시작되었습니다. Task Board에서 실시간 진행 상태를 확인하세요.',
+      })
+      // Task Board로 이동한 뒤 다음 생성을 바로 할 수 있도록 폼 상태를 초기화
+      setDeployConfig(createInitialDeployConfig())
+      setCreateMessage(null)
 
-      await startPolling(taskId)
+      navigate('/tasks', {
+        state: {
+          focusTaskId: taskId,
+        },
+      })
     } catch (error) {
       setStatus('error')
       const errorMessage = error.response?.data?.detail || error.message || '알 수 없는 오류가 발생했습니다.'
       addLog(`Deployment error: ${errorMessage}`, 'error')
+      setCreateMessage({
+        type: 'error',
+        text: errorMessage,
+      })
+    } finally {
+      setDeployingRequest(false)
     }
   }
 
@@ -180,6 +164,17 @@ function App() {
               Create Instance
             </button>
             <button
+              onClick={() => navigate('/tasks')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'tasks'
+                  ? 'text-blue-600 border-blue-600 bg-blue-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <Clock3 className="w-5 h-5" />
+              Task Board
+            </button>
+            <button
               onClick={() => navigate('/monitoring')}
               className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'monitoring'
@@ -218,6 +213,14 @@ function App() {
             }
           />
 
+          {/* Task Board Route */}
+          <Route
+            path="/tasks"
+            element={
+              <TaskBoard focusTaskId={location.state?.focusTaskId} />
+            }
+          />
+
           {/* Monitoring Dashboard Route */}
           <Route
             path="/monitoring"
@@ -242,25 +245,28 @@ function App() {
           <Route
             path="/"
             element={
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                {/* Left Column */}
-                <div className="space-y-6">
-                  <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
-                    <div className="p-6">
-                      <CreateInstanceWizard
-                        config={deployConfig}
-                        onConfigChange={setDeployConfig}
-                        onDeploy={handleDeploy}
-                      />
-                    </div>
+              <div className="max-w-5xl mx-auto space-y-6">
+                <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
+                  <div className="p-6">
+                    <CreateInstanceWizard
+                      config={deployConfig}
+                      onConfigChange={setDeployConfig}
+                      onDeploy={handleDeploy}
+                      isDeploying={deployingRequest}
+                    />
                   </div>
                 </div>
-
-                {/* Right Column */}
-                <div className="space-y-6">
-                  <StatusPanel status={status} />
-                  <LogViewer logs={logs} />
-                </div>
+                {createMessage && (
+                  <div
+                    className={`rounded-lg border px-4 py-3 text-sm ${
+                      createMessage.type === 'success'
+                        ? 'bg-green-50 border-green-200 text-green-700'
+                        : 'bg-red-50 border-red-200 text-red-700'
+                    }`}
+                  >
+                    {createMessage.text}
+                  </div>
+                )}
               </div>
             }
           />

@@ -1,202 +1,90 @@
-# VM 생성 방법 가이드
+# VM Creation Methods
 
-Proxmox에서 Terraform으로 VM을 생성하는 방법은 크게 두 가지가 있습니다.
+이 문서는 현재 저장소가 실제로 제공하는 VM 생성 경로를 정리한다. UI 상 보이는 선택지와 백엔드/인프라 레이어의 실제 지원 범위는 완전히 같지 않다.
 
-## 1. 템플릿에서 클론 (권장)
+## 1. 결론 먼저
 
-가장 일반적이고 빠른 방법입니다. 미리 준비된 템플릿에서 VM을 복제합니다.
+현재 안정적으로 지원되는 방식은 하나다.
 
-### 장점
-- ✅ 빠른 생성 (클론만 하면 됨)
-- ✅ 일관된 설정 보장
-- ✅ OS 설치 불필요
-- ✅ Cloud-init으로 즉시 사용 가능
+- Proxmox 템플릿 클론 기반 생성
 
-### 사용 방법
+현재는 명시적으로 막아 둔 방식:
 
-```hcl
-# Terraform 변수
-template_id = "pve-node-01/100"  # node/vmid 형식
-```
+- ISO 기반 생성
 
-프론트엔드에서:
-- Step 2에서 템플릿 선택
-- 템플릿이 선택되면 자동으로 클론 방식 사용
+현재 활성 경로가 아닌 것:
 
-### 템플릿 준비 방법
+- `/destroy` API 기반 인프라 삭제
 
-1. Proxmox 웹 UI에서 VM 생성
-2. OS 설치 및 기본 설정
-3. Cloud-init 설정 (선택사항)
-4. VM을 템플릿으로 변환:
-   ```bash
-   # Proxmox 웹 UI: VM > More > Convert to Template
-   # 또는 CLI:
-   qm template <vmid>
-   ```
+## 2. 지원 상태 표
 
-## 2. 템플릿 없이 생성
+| 방식 | 프론트 UI | 백엔드 요청 모델 | Terraform 반영 | 실사용 권장 여부 |
+| --- | --- | --- | --- | --- |
+| 템플릿 클론 | 있음 | 있음 | 있음 | 권장 |
+| ISO 선택 | 숨김 | 없음 | 없음 | 비지원 |
+| Skip Terraform / Skip Ansible | API 필드 있음 | 있음 | 부분 지원 | 운영자용 예외 경로 |
+| Destroy 엔드포인트 | 활성 UI 없음 | 활성 라우트 없음 | 없음 | 사용 불가 |
 
-템플릿이 없을 때 사용하는 방법입니다. 두 가지 방식이 있습니다.
+## 3. 템플릿 클론 경로
 
-### 2-1. ISO 이미지에서 설치
+실제 사용 흐름:
 
-ISO 이미지를 사용하여 VM을 생성하고 OS를 설치합니다.
+1. 프론트에서 `template_id` 선택
+2. `POST /api/deploy`
+3. DeploymentService 가 `template_id`, `server_id`, `storage_id`, `network_ids` 등으로 Terraform 변수 구성
+4. Terraform 이 `proxmox_virtual_environment_vm` 에서 `clone` 블록을 사용해 VM 생성
+5. 성공 시 output 에서 IP 추출
+6. 가능하면 Ansible 후처리
 
-#### 장점
-- ✅ 템플릿 없이도 VM 생성 가능
-- ✅ 최신 OS 이미지 사용 가능
-- ✅ 커스텀 OS 설치 가능
+이 경로는 현재 코드와 인프라 파일이 가장 잘 맞는다.
 
-#### 단점
-- ❌ OS 설치 시간 필요 (수동 또는 자동화 필요)
-- ❌ 템플릿 방식보다 느림
+## 4. ISO 선택 경로
 
-#### 사용 방법
+현재 애플리케이션 코드에서는 ISO 기반 생성 경로를 제거했다. 템플릿 선택 없이 새 VM 생성 요청은 허용되지 않는다.
 
-**1. ISO 이미지 업로드**
+## 5. Static IP / DHCP
 
-Proxmox에 ISO 이미지를 업로드합니다:
+생성 방식과 별개로 네트워크 모드는 두 가지다.
 
-```bash
-# Proxmox 웹 UI: Datacenter > Storage > local > Content > ISO Images > Upload
-# 또는 CLI:
-scp ubuntu-22.04-server-amd64.iso root@proxmox-server:/var/lib/vz/template/iso/
-```
+### DHCP
 
-**2. Terraform 변수 설정**
+- `vm_ip` 를 비워 둔다
+- Terraform guest agent 결과에 기대어 IP 를 읽는다
+- 템플릿에 guest agent 가 없으면 Ansible 단계가 이어지지 않을 수 있다
 
-```hcl
-# 템플릿 ID는 비워둠
-template_id = ""
+### Static IP
 
-# ISO 이미지 경로 설정
-iso_file = "local:iso/ubuntu-22.04-server-amd64.iso"
-# 형식: storage:path/to/file.iso
-```
+- `vm_ip` 를 CIDR 형식으로 넘긴다
+- `vm_gateway` 를 함께 넘긴다
+- Terraform 출력은 CIDR 에서 주소 부분만 잘라 반환한다
 
-**3. VM 생성**
+## 6. Skip 플래그
 
-```bash
-terraform apply
-```
+`DeployRequest` 에는 아래 플래그가 있다.
 
-**4. OS 설치**
+- `skip_terraform`
+- `skip_ansible`
 
-VM이 생성되면:
-- VNC 콘솔로 접속하여 OS 설치 진행
-- 또는 자동화 스크립트 사용 (preseed/kickstart)
+의미:
 
-### 2-2. Cloud-init 이미지 사용
+- `skip_terraform=true`: 기존 VM 이 이미 있거나, Terraform 단계를 제외하고 운영자가 Ansible 만 돌리고 싶은 경우
+- `skip_ansible=true`: VM 생성까지만 하고 후속 구성을 생략하고 싶은 경우
 
-Cloud-init을 지원하는 OS 이미지를 직접 사용합니다.
+주의:
 
-#### 장점
-- ✅ 자동화된 OS 설치
-- ✅ Cloud-init으로 초기 설정 자동화
-- ✅ 템플릿보다 유연함
+- 프론트 기본 UI 는 이 플래그를 적극적으로 노출하지 않는다.
+- 일반 사용자 흐름보다 운영/디버깅용 경로에 가깝다.
 
-#### 단점
-- ❌ Cloud-init 지원 이미지 필요
-- ❌ 설정이 복잡할 수 있음
+## 7. 현재 설계 불일치
 
-#### 사용 방법
+- 실제 인프라 레이어는 템플릿 클론 쪽만 열려 있다.
+- 외부 클라이언트도 템플릿 기반 payload 기준으로 맞춰야 한다.
 
-**1. Cloud-init 이미지 준비**
+## 8. 운영 권장안
 
-Proxmox가 지원하는 Cloud-init 이미지 형식:
-- QCOW2 이미지
-- VMDK 이미지
+현재 기준 추천 순서:
 
-**2. Terraform 설정**
-
-```hcl
-template_id = ""  # 템플릿 없음
-iso_file = ""     # ISO 없음
-os_type = "cloud-init"
-
-# Cloud-init user-data 설정
-cloudinit_user_data = <<-EOF
-  #cloud-config
-  users:
-    - name: admin
-      ssh-authorized-keys:
-        - ssh-rsa AAAAB3NzaC1yc2E...
-  packages:
-    - curl
-    - git
-EOF
-```
-
-## 현재 프로젝트 구현 상태
-
-### 템플릿 방식 (완료)
-- ✅ 프론트엔드에서 템플릿 선택 가능
-- ✅ Terraform에서 자동으로 클론
-
-### 템플릿 없이 생성 (부분 구현)
-- ✅ ISO 이미지 지원 (변수 추가됨)
-- ⚠️ 프론트엔드에서 ISO 선택 UI 미구현
-- ⚠️ Cloud-init user-data 입력 UI 미구현
-
-## 권장 사항
-
-### 프로덕션 환경
-- **템플릿 방식 사용 권장**
-  - 빠르고 일관된 VM 생성
-  - 표준화된 설정 보장
-
-### 개발/테스트 환경
-- **ISO 방식 사용 가능**
-  - 다양한 OS 테스트
-  - 최신 이미지 사용
-
-### 자동화가 필요한 경우
-- **Cloud-init 이미지 사용**
-  - 완전 자동화된 설치
-  - 설정 스크립트 통합
-
-## 예제: 템플릿 없이 Ubuntu VM 생성
-
-```hcl
-# variables.tf
-variable "iso_file" {
-  description = "ISO 이미지 경로"
-  type        = string
-  default     = "local:iso/ubuntu-22.04-server-amd64.iso"
-}
-
-# main.tf
-resource "proxmox_vm_qemu" "instance" {
-  name        = "ubuntu-vm"
-  target_node = "pve-node-01"
-  
-  # 템플릿 없이 생성
-  clone = null
-  
-  # ISO 이미지 사용
-  iso = var.iso_file
-  
-  # VM 설정
-  cores  = 2
-  memory = 4096
-  # ... 기타 설정
-}
-```
-
-## 문제 해결
-
-### ISO 이미지가 인식되지 않음
-- ISO 파일 경로 확인: `storage:path/to/file.iso` 형식
-- 스토리지 이름 확인: Proxmox 웹 UI에서 확인
-- 파일 권한 확인: Proxmox 서버에서 읽기 가능한지 확인
-
-### Cloud-init이 작동하지 않음
-- `os_type = "cloud-init"` 설정 확인
-- Cloud-init 이미지인지 확인
-- user-data 형식 확인 (YAML 형식)
-
-### VM이 부팅되지 않음
-- 부팅 순서 확인: ISO가 첫 번째인지 확인
-- 네트워크 설정 확인: DHCP 또는 정적 IP 설정
-- VNC 콘솔로 직접 확인
+1. 템플릿 클론만 표준 경로로 운영
+2. ISO 경로는 문서상 “비지원”으로 명시
+3. 필요하면 ISO 경로를 정말 구현하거나, 반대로 UI 에서 숨김 처리
+4. 삭제 기능은 별도 API/UX 설계 후 다시 연결

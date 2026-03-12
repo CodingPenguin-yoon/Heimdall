@@ -27,7 +27,7 @@ backend/
 │   └── services/                   # 비즈니스 로직
 │       ├── deployment/
 │       │   └── service.py          # DeploymentService (Terraform+Ansible 통합)
-│       ├── terraform_service.py    # Terraform 실행 서비스
+│       ├── terraform/__init__.py    # Terraform 실행 서비스
 │       ├── ansible/
 │       │   └── __init__.py         # Ansible 실행 서비스
 │       ├── proxmox/
@@ -46,8 +46,10 @@ backend/
 │       ├── playbook.yml            # 메인 Playbook
 │       └── inventory.yml.example   # Inventory 예제
 ├── requirements.txt                # Python 의존성
-└── .env.example                    # 환경변수 예제
+└── (루트 .env 사용)                # 환경변수 파일은 프로젝트 루트에 위치
 ```
+
+참고: Terraform/Ansible IaC 파일은 현재 `../infra/terraform`, `../infra/ansible` 경로를 사용합니다.
 
 ## 설치 및 실행
 
@@ -72,9 +74,12 @@ pip install -r requirements.txt
 ### 3. 환경변수 설정
 
 ```bash
-cp env.example .env
+cd ..
+touch .env
 # .env 파일을 편집하여 Proxmox / Ansible / Gemini API 정보 입력
 ```
+
+백엔드는 프로젝트 루트의 `.env`를 자동으로 로드합니다.
 
 `.env` 파일에는 최소한 다음 항목들을 설정해야 합니다:
 
@@ -91,7 +96,7 @@ cp env.example .env
 
 ### 4. Terraform Provider 설정
 
-`iac/terraform/main.tf` 파일의 변수에 환경변수를 설정하거나, `terraform.tfvars` 파일을 생성하세요.
+`../infra/terraform/main.tf` 파일의 변수에 환경변수를 설정하거나, `terraform.tfvars` 파일을 생성하세요.
 
 환경변수로 설정하는 경우:
 ```bash

@@ -21,7 +21,9 @@ from pydantic import BaseModel, Field
 # ---------------------------------------------------------------------------
 # 환경 변수 로드
 # ---------------------------------------------------------------------------
-project_root = Path(__file__).resolve().parent.parent.parent.parent
+# __file__ = backend/app/services/llm/llm_core.py
+# parent x5 = terraform_ansible (프로젝트 루트)
+project_root = Path(__file__).resolve().parent.parent.parent.parent.parent
 env_path = project_root / ".env"
 if env_path.exists():
     load_dotenv(env_path, override=True)
@@ -115,13 +117,12 @@ class LLMService:
   "assistant_message": "사용자에게 보여줄 자연어 설명",
   "actions": [
     {
-      "type": "list_vms | list_nodes | get_vm_detail | create_vm | list_templates | list_iso_images | list_storages | list_networks",
+      "type": "list_vms | list_nodes | get_vm_detail | create_vm | list_templates | list_storages | list_networks",
       "description": "이 액션이 수행하는 일을 자연어로 한 줄 요약",
       "params": {
         "server_name": "예시-이름",
         "server_id": "노드/호스트 ID 또는 Proxmox 노드 이름",
         "template_id": "node/vmid 형식 템플릿 ID (템플릿 기반 생성 시)",
-        "iso_image_id": "storage:iso/filename.iso 형식 ISO ID (ISO 기반 설치 시)",
         "cpu_cores": 4,
         "memory_gb": 8,
         "disk_size_gb": 50,
@@ -139,8 +140,8 @@ class LLMService:
 1) 사용자가 "VM 만들어줘", "Ubuntu 하나 대충" 같이 모호하게 요청하면,
    곧바로 create_vm 액션을 생성하지 말고 다음 정보를 차례대로 물어보세요.
    - 어느 Proxmox 노드(서버)에 만들지 (필요 시 list_nodes 액션으로 후보를 보여줍니다)
-   - 템플릿으로 클론할지(template_id) 아니면 ISO로 설치할지(iso_image_id)
-     (필요 시 list_templates / list_iso_images 액션으로 후보를 보여줍니다)
+   - 어떤 템플릿(template_id)으로 클론할지
+     (필요 시 list_templates 액션으로 후보를 보여줍니다)
    - CPU 코어 수(cpu_cores), 메모리 용량(memory_gb), 디스크 용량(disk_size_gb)
    - 어느 스토리지(storage_id)에 둘지 (필요 시 list_storages 액션으로 후보를 보여줍니다)
    - 어느 네트워크 브리지들(network_ids)에 연결할지 (필요 시 list_networks 액션으로 후보를 보여줍니다)
@@ -155,8 +156,6 @@ class LLMService:
        예: { "type": "list_nodes", "description": "선택 가능한 Proxmox 노드 목록 조회", "params": {} }
    - "어떤 템플릿을 사용할까요?" 라고 물을 때에는,
      actions 배열에 반드시 하나의 list_templates 액션을 포함합니다.
-   - "어떤 ISO로 설치할까요?" 라고 물을 때에는,
-     actions 배열에 반드시 하나의 list_iso_images 액션을 포함합니다.
    - "어느 스토리지에 둘까요?" 라고 물을 때에는,
      actions 배열에 반드시 하나의 list_storages 액션을 포함합니다.
    - "어느 네트워크(브리지)에 연결할까요?" 라고 물을 때에는,
@@ -170,7 +169,7 @@ class LLMService:
 4) create_vm 액션의 params 에는 백엔드에서 사용하는 키 이름을 그대로 사용합니다:
    - server_name (선택)
    - server_id (또는 node 이름)
-   - template_id 또는 iso_image_id (둘 중 하나 이상)
+   - template_id
    - cpu_cores, memory_gb, disk_size_gb, storage_id, network_ids
 
 """.strip()
@@ -356,4 +355,3 @@ __all__ = [
     "LLMChatResult",
     "LLMConfig",
 ]
-

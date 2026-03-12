@@ -9,9 +9,10 @@ from __future__ import annotations
 from typing import List
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.proxmox import ProxmoxService
+from app.services.network import network_service
 
 
 router = APIRouter()
@@ -48,10 +49,23 @@ class VMResponse(BaseModel):
     vms: List[dict]
 
 
-class ISOResponse(BaseModel):
-    """ISO 이미지 응답 모델"""
+class TerminateInstanceRequest(BaseModel):
+    """인스턴스 종료/삭제 요청 모델"""
 
-    iso_images: List[dict]
+    node: str
+    vmid: int
+    shutdown_timeout_seconds: int = Field(default=60, ge=5, le=600)
+    force_stop_timeout_seconds: int = Field(default=30, ge=5, le=300)
+
+
+class TerminateInstanceResponse(BaseModel):
+    """인스턴스 종료/삭제 응답 모델"""
+
+    success: bool
+    node: str
+    vmid: int
+    message: str
+    details: dict
 
 
 @router.get("/servers", response_model=ServerResponse)
@@ -138,6 +152,41 @@ async def get_instances():
         raise HTTPException(
             status_code=500,
             detail=f"인스턴스 목록 조회 실패: {str(e)}",
+        )
+
+
+@router.post("/instances/terminate", response_model=TerminateInstanceResponse)
+async def terminate_instance(request: TerminateInstanceRequest):
+    """
+    인스턴스 종료 후 삭제
+    순서: graceful shutdown -> (타임아웃 시 force stop) -> delete
+    """
+    try:
+        result = proxmox_service.terminate_vm(
+            node=request.node,
+            vmid=request.vmid,
+            shutdown_timeout_seconds=request.shutdown_timeout_seconds,
+            force_stop_timeout_seconds=request.force_stop_timeout_seconds,
+        )
+
+        if not result.get("success"):
+            if result.get("not_found"):
+                raise HTTPException(status_code=404, detail=result.get("error") or "VM을 찾을 수 없습니다.")
+            raise HTTPException(status_code=409, detail=result.get("error") or "VM 종료/삭제에 실패했습니다.")
+
+        return TerminateInstanceResponse(
+            success=True,
+            node=request.node,
+            vmid=request.vmid,
+            message="VM이 종료 후 삭제되었습니다.",
+            details=result,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"인스턴스 종료/삭제 실패: {str(e)}",
         )
 
 
@@ -244,18 +293,83 @@ async def get_vm_monitoring(node_id: str, vmid: int):
         )
 
 
-@router.get("/servers/{server_id}/iso-images", response_model=ISOResponse)
-async def get_server_iso_images(server_id: str):
+# ============ IP Pool 관련 엔드포인트 ============
+
+@router.get("/network/ip-pool/config")
+async def get_ip_pool_config():
     """
-    특정 서버의 ISO 이미지 목록 조회
+    IP 풀 설정 조회
+    """
+    config = network_service.get_pool_config()
+    if not config:
+        raise HTTPException(
+            status_code=404,
+            detail="IP 풀이 설정되지 않았습니다. .env 파일에 IP_POOL_START, IP_POOL_END, IP_GATEWAY를 설정하세요.",
+        )
+    return config
+
+
+@router.get("/network/ip-pool/available")
+async def get_available_ips(limit: int = 10):
+    """
+    사용 가능한 IP 목록 조회 (ping으로 확인)
     """
     try:
-        iso_images = proxmox_service.get_iso_images(node=server_id)
-        return ISOResponse(iso_images=iso_images)
+        available_ips = network_service.get_available_ips(limit=limit)
+        pool_config = network_service.get_pool_config()
+        return {
+            "available_ips": available_ips,
+            "pool_config": pool_config,
+            "count": len(available_ips),
+        }
     except Exception as e:
         raise HTTPException(
             status_code=500,
-            detail=f"ISO 이미지 목록 조회 실패: {str(e)}",
+            detail=f"사용 가능한 IP 조회 실패: {str(e)}",
+        )
+
+
+@router.get("/network/ip-pool/next")
+async def get_next_available_ip():
+    """
+    다음 사용 가능한 IP 반환
+    """
+    try:
+        next_ip = network_service.get_next_available_ip()
+        if not next_ip:
+            raise HTTPException(
+                status_code=404,
+                detail="사용 가능한 IP가 없습니다.",
+            )
+        return next_ip
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"IP 조회 실패: {str(e)}",
+        )
+
+
+@router.get("/network/ip-pool/check/{ip}")
+async def check_ip_availability(ip: str):
+    """
+    특정 IP의 사용 가능 여부 확인
+    """
+    try:
+        in_use = network_service.is_ip_in_use(ip)
+        pool_config = network_service.get_pool_config()
+        return {
+            "ip": ip,
+            "in_use": in_use,
+            "available": not in_use,
+            "gateway": pool_config["gateway"] if pool_config else None,
+            "subnet": pool_config["subnet"] if pool_config else 24,
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"IP 확인 실패: {str(e)}",
         )
 
 

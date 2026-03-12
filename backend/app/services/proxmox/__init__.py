@@ -6,8 +6,10 @@ Proxmox API 연동 서비스 패키지
 """
 
 import os
+import re
+import time
 import requests
-from typing import List, Dict, Optional
+from typing import Any, Dict, List, Optional
 from pathlib import Path
 from dotenv import load_dotenv
 import urllib3
@@ -40,6 +42,20 @@ class ProxmoxService:
         self.token_id = os.getenv("PROXMOX_API_TOKEN_ID", "")
         self.token_secret = os.getenv("PROXMOX_API_TOKEN_SECRET", "")
         self.tls_insecure = os.getenv("PROXMOX_TLS_INSECURE", "false").lower() == "true"
+        self.api_connect_timeout_seconds = self._read_float_env(
+            "PROXMOX_API_CONNECT_TIMEOUT_SECONDS",
+            5.0,
+            minimum=0.1,
+        )
+        self.api_read_timeout_seconds = self._read_float_env(
+            "PROXMOX_API_READ_TIMEOUT_SECONDS",
+            self._read_float_env("PROXMOX_API_TIMEOUT_SECONDS", 60.0, minimum=1.0),
+            minimum=1.0,
+        )
+        self._request_timeout = (
+            self.api_connect_timeout_seconds,
+            self.api_read_timeout_seconds,
+        )
         
         # 디버깅: 설정 확인
         if not self.api_url:
@@ -53,6 +69,78 @@ class ProxmoxService:
         # API URL이 없으면 빈 리스트 반환
         if not self.api_url:
             self.api_url = None
+
+    def _read_float_env(self, name: str, default: float, *, minimum: float = 0.0) -> float:
+        raw = os.getenv(name)
+        if raw is None:
+            return default
+        try:
+            return max(float(raw), minimum)
+        except (TypeError, ValueError):
+            return default
+
+    def _natural_sort_key(self, value: object) -> List[object]:
+        text = str(value or "").lower()
+        return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", text)]
+
+    def _safe_int(self, value: object, default: int = 0) -> int:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return int(default)
+
+    def _auth_headers(self) -> Dict[str, str]:
+        return {
+            "Authorization": f"PVEAPIToken={self.token_id}={self.token_secret}",
+        }
+
+    def _make_write_request(
+        self,
+        endpoint: str,
+        *,
+        method: str = "POST",
+        data: Optional[Dict[str, Any]] = None,
+        query: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Proxmox 제어성(POST/DELETE 등) 요청 실행.
+
+        참고:
+        - Proxmox는 대부분 form-data 기반 파라미터를 기대하므로 `data`로 전달합니다.
+        - DELETE는 query string 파라미터를 받을 수 있어 `query`를 별도로 제공합니다.
+        """
+        if not self.api_url:
+            return {"data": None, "error": "PROXMOX_API_URL이 설정되지 않았습니다."}
+
+        url = f"{self.api_url}{endpoint}"
+        try:
+            response = requests.request(
+                method.upper(),
+                url,
+                headers=self._auth_headers(),
+                data=data,
+                params=query,
+                verify=not self.tls_insecure,
+                timeout=self._request_timeout,
+            )
+            response.raise_for_status()
+
+            if not response.text:
+                return {"data": None}
+
+            try:
+                return response.json()
+            except ValueError:
+                return {"data": response.text}
+        except requests.exceptions.RequestException as e:
+            error_message = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                error_message = (
+                    f"{e.response.status_code}: {e.response.text[:500]}"
+                )
+            print(f"Proxmox 제어 API 요청 실패: {url}")
+            print(f"에러: {error_message}")
+            return {"data": None, "error": error_message}
     
     def _make_request(self, endpoint: str, method: str = "GET", params: Optional[Dict] = None) -> Dict:
         """
@@ -73,9 +161,7 @@ class ProxmoxService:
             return {"data": []}
         
         url = f"{self.api_url}{endpoint}"
-        headers = {
-            "Authorization": f"PVEAPIToken={self.token_id}={self.token_secret}"
-        }
+        headers = self._auth_headers()
         
         try:
             if method == "GET":
@@ -84,7 +170,7 @@ class ProxmoxService:
                     headers=headers,
                     params=params,
                     verify=not self.tls_insecure,
-                    timeout=10
+                    timeout=self._request_timeout
                 )
             else:
                 response = requests.request(
@@ -93,7 +179,7 @@ class ProxmoxService:
                     headers=headers,
                     json=params,
                     verify=not self.tls_insecure,
-                    timeout=10
+                    timeout=self._request_timeout
                 )
             
             response.raise_for_status()
@@ -135,8 +221,13 @@ class ProxmoxService:
                     "memory": node.get("maxmem", 0),
                     "uptime": node.get("uptime", 0),
                 })
-            
-            return formatted_nodes
+
+            return sorted(
+                formatted_nodes,
+                key=lambda item: self._natural_sort_key(
+                    item.get("id") or item.get("server_id") or item.get("name") or ""
+                ),
+            )
         except Exception:
             return []
     
@@ -183,49 +274,74 @@ class ProxmoxService:
                             "cpu_cores": vm.get("cpus", 0),
                             "memory_gb": round(vm.get("maxmem", 0) / 1024 / 1024 / 1024, 2) if vm.get("maxmem") else 0,
                         })
-            
-            return templates
+
+            return sorted(
+                templates,
+                key=lambda item: (
+                    self._natural_sort_key(item.get("node") or ""),
+                    self._safe_int(item.get("vmid"), 10**9),
+                    self._natural_sort_key(item.get("name") or item.get("template_name") or ""),
+                ),
+            )
         except Exception:
             return []
     
     def get_storages(self, node: Optional[str] = None) -> List[Dict]:
         """
         Proxmox 스토리지 목록 조회
-        
+
+        선택한 노드의 로컬 스토리지와 공유 스토리지(NFS 등)만 반환합니다.
+        다른 노드의 로컬 스토리지는 필터링됩니다.
+
         Args:
             node: 특정 노드에서만 조회 (None이면 첫 번째 노드)
-            
+
         Returns:
             스토리지 정보 리스트
         """
         try:
             storages = []
-            
+
             # 노드 선택
             if not node:
                 nodes_result = self._make_request("/nodes")
                 nodes = nodes_result.get("data", [])
                 if nodes:
                     node = nodes[0].get("node")
-            
+
             if not node:
                 return []
-            
+
             # 스토리지 목록 조회
             storages_result = self._make_request(f"/nodes/{node}/storage")
             storage_list = storages_result.get("data", [])
-            
+
             # 스토리지 정보 변환
             for storage in storage_list:
                 storage_info = storage.get("storage", "")
                 if not storage_info:
                     continue
-                
+
                 # 스토리지 상세 정보 조회
                 try:
                     detail_result = self._make_request(f"/storage/{storage_info}")
                     detail = detail_result.get("data", {})
-                    
+
+                    # 스토리지 필터링:
+                    # 1. shared=1 이면 공유 스토리지 (NFS, Ceph 등) -> 모든 노드에서 표시
+                    # 2. nodes 필드가 없거나 비어있으면 모든 노드에서 접근 가능
+                    # 3. nodes 필드에 현재 노드가 포함되어 있으면 표시
+                    is_shared = detail.get("shared", 0) == 1
+                    storage_nodes = detail.get("nodes", "")
+
+                    # nodes 필드가 있으면 해당 노드만 접근 가능
+                    if storage_nodes and not is_shared:
+                        # 쉼표로 구분된 노드 목록 파싱
+                        allowed_nodes = [n.strip() for n in storage_nodes.split(",")]
+                        if node not in allowed_nodes:
+                            # 현재 노드가 허용된 노드 목록에 없으면 스킵
+                            continue
+
                     storages.append({
                         "id": storage_info,
                         "storage_id": storage_info,
@@ -233,20 +349,27 @@ class ProxmoxService:
                         "storage_name": storage_info,
                         "type": detail.get("type", storage.get("type", "unknown")),
                         "content": detail.get("content", []),
+                        "shared": is_shared,
                         "size_gb": round(detail.get("total", 0) / 1024 / 1024 / 1024, 2) if detail.get("total") else None,
                         "available_gb": round((detail.get("total", 0) - detail.get("used", 0)) / 1024 / 1024 / 1024, 2) if detail.get("total") else None,
                     })
                 except Exception:
-                    # 상세 정보 조회 실패 시 기본 정보만
+                    # 상세 정보 조회 실패 시 기본 정보만 (필터링 불가하므로 포함)
                     storages.append({
                         "id": storage_info,
                         "storage_id": storage_info,
                         "name": storage_info,
                         "storage_name": storage_info,
                         "type": storage.get("type", "unknown"),
+                        "shared": False,
                     })
-            
-            return storages
+
+            return sorted(
+                storages,
+                key=lambda item: self._natural_sort_key(
+                    item.get("id") or item.get("storage_id") or item.get("name") or ""
+                ),
+            )
         except Exception:
             return []
     
@@ -356,116 +479,80 @@ class ProxmoxService:
                             "uptime": vm.get("uptime", 0),
                         })
             
-            return vms
+            return sorted(
+                vms,
+                key=lambda item: (
+                    self._natural_sort_key(item.get("node") or ""),
+                    self._safe_int(item.get("vmid"), 10**9),
+                    self._natural_sort_key(item.get("name") or item.get("server_name") or ""),
+                ),
+            )
         except Exception:
             return []
     
     def get_networks(self, node: Optional[str] = None) -> List[Dict]:
         """
         Proxmox 네트워크 목록 조회
-        
+
+        VM에 할당 가능한 bridge 타입 인터페이스(vmbr*)만 반환합니다.
+        물리 인터페이스(eth, enp 등)는 VM에 직접 할당할 수 없으므로 필터링됩니다.
+
         Args:
             node: 특정 노드에서만 조회 (None이면 첫 번째 노드)
-            
+
         Returns:
             네트워크 정보 리스트
         """
         try:
             networks = []
-            
+
             # 노드 선택
             if not node:
                 nodes_result = self._make_request("/nodes")
                 nodes = nodes_result.get("data", [])
                 if nodes:
                     node = nodes[0].get("node")
-            
+
             if not node:
                 return []
-            
+
             # 네트워크 목록 조회
             networks_result = self._make_request(f"/nodes/{node}/network")
             network_list = networks_result.get("data", [])
-            
-            # 네트워크 정보 변환
+
+            # 네트워크 정보 변환 (bridge 타입만 필터링)
             for network in network_list:
                 iface = network.get("iface", "")
-                if not iface or iface.startswith("lo"):
+                iface_type = network.get("type", "")
+
+                # VM에 할당 가능한 bridge 타입만 포함
+                # - vmbr* 형식의 Linux bridge만 VM에 할당 가능
+                # - eth, enp, enx 등 물리 인터페이스는 제외
+                # - lo (loopback), bond, vlan 등도 제외
+                if not iface or not iface.startswith("vmbr"):
                     continue
-                
+
+                # bridge 타입인지 추가 확인
+                if iface_type != "bridge":
+                    continue
+
                 networks.append({
                     "id": iface,
                     "network_id": iface,
                     "name": iface,
                     "network_name": iface,
-                    "type": network.get("type", "bridge"),
+                    "type": iface_type,
                     "cidr": network.get("cidr", ""),
                     "gateway": network.get("gateway", ""),
-                    "description": f"{network.get('type', 'bridge')} interface",
+                    "description": "bridge interface",
                 })
-            
-            return networks
-        except Exception:
-            return []
-    
-    def get_iso_images(self, node: Optional[str] = None) -> List[Dict]:
-        """
-        Proxmox ISO 이미지 목록 조회
-        
-        Args:
-            node: 특정 노드에서만 조회 (None이면 첫 번째 노드)
-            
-        Returns:
-            ISO 이미지 정보 리스트
-        """
-        try:
-            iso_images = []
-            
-            # 노드 선택
-            if not node:
-                nodes_result = self._make_request("/nodes")
-                nodes = nodes_result.get("data", [])
-                if nodes:
-                    node = nodes[0].get("node")
-            
-            if not node:
-                return []
-            
-            # 스토리지 목록 조회
-            storages_result = self._make_request(f"/nodes/{node}/storage")
-            storage_list = storages_result.get("data", [])
-            
-            # 각 스토리지에서 ISO 이미지 조회
-            for storage in storage_list:
-                storage_name = storage.get("storage", "")
-                if not storage_name:
-                    continue
-                
-                # 스토리지 콘텐츠 조회 (노드 경로 사용)
-                try:
-                    content_result = self._make_request(f"/nodes/{node}/storage/{storage_name}/content")
-                    content_list = content_result.get("data", [])
-                    
-                    # ISO 이미지만 필터링
-                    for item in content_list:
-                        if item.get("content") == "iso":
-                            volid = item.get("volid", "")
-                            if volid:
-                                # volid 형식: storage:iso/filename.iso
-                                iso_images.append({
-                                    "id": volid,
-                                    "iso_id": volid,
-                                    "name": volid.split("/")[-1] if "/" in volid else volid,
-                                    "iso_name": volid.split("/")[-1] if "/" in volid else volid,
-                                    "storage": storage_name,
-                                    "size": item.get("size", 0),
-                                    "size_gb": round(item.get("size", 0) / 1024 / 1024 / 1024, 2) if item.get("size") else 0,
-                                })
-                except Exception:
-                    # 스토리지 콘텐츠 조회 실패 시 스킵
-                    continue
-            
-            return iso_images
+
+            return sorted(
+                networks,
+                key=lambda item: self._natural_sort_key(
+                    item.get("id") or item.get("network_id") or item.get("name") or ""
+                ),
+            )
         except Exception:
             return []
     
@@ -516,7 +603,8 @@ class ProxmoxService:
         """
         try:
             result = self._make_request(f"/nodes/{node}/qemu/{vmid}/status/current")
-            return result.get("data", {})
+            data = result.get("data")
+            return data if isinstance(data, dict) and data else None
         except Exception:
             return None
     
@@ -538,6 +626,291 @@ class ProxmoxService:
             return result.get("data", [])
         except Exception:
             return []
+
+    def get_task_status(self, node: str, upid: str) -> Optional[Dict]:
+        """
+        Proxmox task 상태 조회
+
+        Args:
+            node: 노드 이름
+            upid: Proxmox 작업 ID (UPID:...)
+
+        Returns:
+            task 상태 딕셔너리 또는 None
+        """
+        try:
+            result = self._make_request(f"/nodes/{node}/tasks/{upid}/status")
+            return result.get("data", {})
+        except Exception:
+            return None
+
+    def get_task_log(self, node: str, upid: str, start: int = 0) -> List[Dict]:
+        """
+        Proxmox task 로그 조회
+
+        Args:
+            node: 노드 이름
+            upid: Proxmox 작업 ID (UPID:...)
+            start: 시작 라인 인덱스
+
+        Returns:
+            로그 엔트리 리스트
+        """
+        try:
+            result = self._make_request(
+                f"/nodes/{node}/tasks/{upid}/log",
+                params={"start": max(0, int(start))},
+            )
+            return result.get("data", [])
+        except Exception:
+            return []
+
+    def get_node_tasks(
+        self,
+        node: str,
+        limit: int = 100,
+        source: str = "all",
+        vmid: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        특정 노드의 최근 task 목록 조회
+
+        Args:
+            node: 노드 이름
+            limit: 최대 조회 개수
+            source: Proxmox task source 옵션 (all/active/...)
+            vmid: VM ID 필터 (선택)
+
+        Returns:
+            task 리스트
+        """
+        try:
+            params: Dict[str, Any] = {
+                "limit": max(1, min(int(limit), 500)),
+                "source": source or "all",
+            }
+            if vmid is not None:
+                params["vmid"] = int(vmid)
+            result = self._make_request(
+                f"/nodes/{node}/tasks",
+                params=params,
+            )
+            data = result.get("data", [])
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def find_vm_id_by_name(self, node: str, vm_name: str) -> Optional[int]:
+        """
+        노드에서 VM 이름으로 VMID 조회 (경량 조회)
+        """
+        name = str(vm_name or "").strip().lower()
+        if not node or not name:
+            return None
+
+        try:
+            result = self._make_request(f"/nodes/{node}/qemu")
+            vm_list = result.get("data", [])
+            if not isinstance(vm_list, list):
+                return None
+            for vm in vm_list:
+                current_name = str(vm.get("name", "")).strip().lower()
+                if current_name != name:
+                    continue
+                if vm.get("template") == 1:
+                    continue
+                vmid = vm.get("vmid")
+                if vmid is None:
+                    continue
+                try:
+                    return int(vmid)
+                except (TypeError, ValueError):
+                    continue
+            return None
+        except Exception:
+            return None
+
+    def shutdown_vm(self, node: str, vmid: int) -> Dict[str, Any]:
+        """
+        VM 정상 종료 요청 (graceful shutdown)
+        """
+        result = self._make_write_request(
+            f"/nodes/{node}/qemu/{vmid}/status/shutdown",
+            method="POST",
+        )
+        if result.get("error"):
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "upid": result.get("data")}
+
+    def stop_vm(self, node: str, vmid: int) -> Dict[str, Any]:
+        """
+        VM 강제 종료 요청 (power off)
+        """
+        result = self._make_write_request(
+            f"/nodes/{node}/qemu/{vmid}/status/stop",
+            method="POST",
+        )
+        if result.get("error"):
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "upid": result.get("data")}
+
+    def delete_vm(
+        self,
+        node: str,
+        vmid: int,
+        *,
+        purge: bool = True,
+        destroy_unreferenced_disks: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        VM 삭제 요청
+        """
+        query: Dict[str, Any] = {}
+        if purge:
+            query["purge"] = 1
+        if destroy_unreferenced_disks:
+            query["destroy-unreferenced-disks"] = 1
+
+        result = self._make_write_request(
+            f"/nodes/{node}/qemu/{vmid}",
+            method="DELETE",
+            query=query,
+        )
+        if result.get("error"):
+            return {"success": False, "error": result["error"]}
+        return {"success": True, "upid": result.get("data")}
+
+    def wait_for_vm_status(
+        self,
+        node: str,
+        vmid: int,
+        target_status: str,
+        *,
+        timeout_seconds: int = 60,
+        poll_interval_seconds: float = 2.0,
+    ) -> bool:
+        """
+        VM 상태가 target_status가 될 때까지 폴링
+        """
+        target = str(target_status or "").strip().lower()
+        timeout = max(1, int(timeout_seconds))
+        poll_interval = max(0.5, float(poll_interval_seconds))
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() <= deadline:
+            status = self.get_vm_status(node, vmid)
+            if isinstance(status, dict):
+                current = str(status.get("status", "")).strip().lower()
+                if current == target:
+                    return True
+            time.sleep(poll_interval)
+        return False
+
+    def wait_for_vm_deleted(
+        self,
+        node: str,
+        vmid: int,
+        *,
+        timeout_seconds: int = 60,
+        poll_interval_seconds: float = 2.0,
+    ) -> bool:
+        """
+        VM 삭제 완료(조회 불가) 상태가 될 때까지 폴링
+        """
+        timeout = max(1, int(timeout_seconds))
+        poll_interval = max(0.5, float(poll_interval_seconds))
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() <= deadline:
+            status = self.get_vm_status(node, vmid)
+            if status is None:
+                return True
+            time.sleep(poll_interval)
+        return False
+
+    def terminate_vm(
+        self,
+        node: str,
+        vmid: int,
+        *,
+        shutdown_timeout_seconds: int = 60,
+        force_stop_timeout_seconds: int = 30,
+    ) -> Dict[str, Any]:
+        """
+        VM 종료 후 삭제(terminate) 처리
+        순서: 상태조회 -> (running이면 shutdown) -> (timeout 시 stop) -> delete
+        """
+        status = self.get_vm_status(node, vmid)
+        if not status:
+            return {
+                "success": False,
+                "not_found": True,
+                "error": f"VM not found: {node}/{vmid}",
+            }
+
+        initial_status = str(status.get("status", "unknown")).strip().lower()
+        result: Dict[str, Any] = {
+            "success": False,
+            "node": node,
+            "vmid": int(vmid),
+            "initial_status": initial_status,
+            "shutdown_requested": False,
+            "forced_stop_requested": False,
+            "delete_requested": False,
+            "warnings": [],
+        }
+
+        if initial_status == "running":
+            shutdown_result = self.shutdown_vm(node, vmid)
+            if not shutdown_result.get("success"):
+                result["error"] = f"VM shutdown 실패: {shutdown_result.get('error')}"
+                return result
+
+            result["shutdown_requested"] = True
+            result["shutdown_upid"] = shutdown_result.get("upid")
+
+            stopped = self.wait_for_vm_status(
+                node,
+                vmid,
+                "stopped",
+                timeout_seconds=shutdown_timeout_seconds,
+            )
+            if not stopped:
+                result["warnings"].append(
+                    "Graceful shutdown 타임아웃으로 force stop을 시도합니다."
+                )
+                stop_result = self.stop_vm(node, vmid)
+                if not stop_result.get("success"):
+                    result["error"] = f"VM force stop 실패: {stop_result.get('error')}"
+                    return result
+
+                result["forced_stop_requested"] = True
+                result["force_stop_upid"] = stop_result.get("upid")
+
+                forced_stopped = self.wait_for_vm_status(
+                    node,
+                    vmid,
+                    "stopped",
+                    timeout_seconds=force_stop_timeout_seconds,
+                )
+                if not forced_stopped:
+                    result["error"] = "VM stopped 상태 확인 타임아웃"
+                    return result
+
+        delete_result = self.delete_vm(node, vmid)
+        if not delete_result.get("success"):
+            result["error"] = f"VM 삭제 실패: {delete_result.get('error')}"
+            return result
+
+        result["delete_requested"] = True
+        result["delete_upid"] = delete_result.get("upid")
+
+        deleted = self.wait_for_vm_deleted(node, vmid, timeout_seconds=60)
+        if not deleted:
+            result["warnings"].append("삭제 요청은 성공했지만 삭제 완료 확인이 지연되고 있습니다.")
+
+        result["success"] = True
+        return result
     
     def get_all_nodes_monitoring(self) -> List[Dict]:
         """
@@ -651,9 +1024,8 @@ class ProxmoxService:
                             disk_total += storage_total
                             disk_used += storage_used
                     
-                    # 스토리지 목록을 정렬 (NFS 타입은 맨 마지막에)
-                    # 정렬 키: (NFS 여부, 이름) - NFS가 아닌 것들이 먼저, 그 다음 NFS가 이름순으로
-                    storages.sort(key=lambda x: (x["type"] == "nfs", x["name"].lower()))
+                    # 스토리지 목록은 이름 기준 자연 오름차순으로 고정
+                    storages.sort(key=lambda x: self._natural_sort_key(x.get("name", "")))
                 except Exception as e:
                     # 스토리지 목록 조회 실패 시 기본값 유지 (에러 로깅)
                     print(f"스토리지 목록 조회 실패 ({node_name}): {str(e)}")
@@ -680,7 +1052,11 @@ class ProxmoxService:
                     "load_avg": load_avg,
                 })
             
-            return monitoring_data
+            return sorted(
+                monitoring_data,
+                key=lambda item: self._natural_sort_key(
+                    item.get("node") or item.get("name") or ""
+                ),
+            )
         except Exception:
             return []
-

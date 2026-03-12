@@ -57,7 +57,7 @@ Proxmox 가상화 환경을 웹 기반으로 관리할 수 있는 통합 플랫�
 - **IP 주소 자동 추출**: Terraform output에서 IP 주소 추출
 - **Ansible Inventory 자동 생성**: 추출한 IP 주소로 inventory.yml 동적 생성
 - **Ansible Playbook 자동 실행**: 생성된 inventory로 playbook 실행
-- **실시간 로그 스트리밍**: 배포 과정의 실시간 로그 수집 및 제공 (2초 간격 폴링)
+- **실시간 로그 스트리밍**: 배포 과정의 실시간 로그/상태를 SSE(`/api/tasks/stream`)로 수집 및 제공
 
 ## 🛠️ 기술 스택
 
@@ -102,7 +102,7 @@ Proxmox 가상화 환경을 웹 기반으로 관리할 수 있는 통합 플랫�
 #### ⚙️ 제어 (Terraform 사용)
 - **용도**: 리소스 생성/수정/삭제 (VM 생성, 설정 변경 등)
 - **방식**: Terraform IaC (Infrastructure as Code)
-- **서비스**: `backend/app/services/terraform_service.py`, `backend/app/services/deployment/service.py`
+- **서비스**: `backend/app/services/terraform/__init__.py`, `backend/app/services/deployment/service.py`
 - **도메인 라우터**: `backend/app/domains/deploy/router.py`
 - **장점**:
   - 코드로 관리 (버전 관리, 추적 가능)
@@ -114,6 +114,9 @@ Proxmox 가상화 환경을 웹 기반으로 관리할 수 있는 통합 플랫�
 이 분리로 **안전성과 효율성을 모두 확보**합니다.
 
 ## 🚀 빠른 시작
+
+> 최신 실행 절차는 [docs/LOCAL_RUN_GUIDE.md](./docs/LOCAL_RUN_GUIDE.md)를 우선 참고하세요.  
+> (현재 저장소에는 `env.example` 파일이 없습니다.)
 
 ### 사전 요구사항
 
@@ -133,14 +136,16 @@ cd proxmox_web
 ### 2. 환경 설정
 
 ```bash
-# 프로젝트 루트에서 .env 파일 생성
-cp env.example .env
+# 프로젝트 루트에서 .env 파일 생성 (현재 env.example 없음)
+touch .env
 
-# .env 파일 편집 (Proxmox API 정보 입력)
+# 필수 키 입력
 # PROXMOX_API_URL=https://your-proxmox-server:8006/api2/json
 # PROXMOX_API_TOKEN_ID=user@pam!token_name
-# PROXMOX_API_TOKEN_SECRET=your_token_secret
+# PROXMOX_API_TOKEN_SECRET=your_token_secret_here
 ```
+
+전체 템플릿은 [docs/LOCAL_RUN_GUIDE.md](./docs/LOCAL_RUN_GUIDE.md)를 참고하세요.
 
 ### 3. 백엔드 설정
 
@@ -235,7 +240,7 @@ proxmox_web/
 │   │       ├── __init__.py
 │   │       ├── deployment/          # 배포 도메인
 │   │       │   └── service.py
-│   │       ├── terraform_service.py # Terraform 실행 서비스
+│   │       ├── terraform/__init__.py # Terraform 실행 서비스
 │   │       ├── ansible/             # Ansible 실행 서비스
 │   │       │   └── __init__.py
 │   │       ├── proxmox/             # Proxmox API 연동 서비스
@@ -295,7 +300,6 @@ proxmox_web/
 │   ├── TEMPLATE_PREPARATION.md
 │   └── VM_CREATION_METHODS.md
 ├── .env                         # 환경 변수 (gitignore)
-├── env.example                  # 환경 변수 예제
 ├── run.sh                       # 실행 스크립트
 └── README.md                    # 이 파일
 ```
@@ -431,11 +435,9 @@ proxmox_web/
    - 실시간 로그 스트리밍
 
 7. **프론트엔드 실시간 업데이트**
-   - `startPolling(taskId)` 함수 실행
-   - 2초 간격으로 `/api/status/{task_id}`와 `/api/logs/{task_id}` 폴링
-   - 새로운 로그를 UI에 실시간 표시
-   - 성공/실패 상태 도달 시 폴링 중지
-   - 최대 10분 후 타임아웃
+   - `Task Board`가 `/api/tasks/stream` SSE(EventStream) 구독
+   - 백엔드 작업 이벤트(`progress/status/log/archive`)를 즉시 반영
+   - 네트워크 단절 시 마지막 이벤트 ID 기준 자동 재연결
 
 ## ⚙️ 환경 변수
 
@@ -456,6 +458,17 @@ PROXMOX_TLS_INSECURE=false
 # 주의: Terraform은 TF_VAR_ 접두사를 가진 환경변수를 자동으로 읽습니다.
 # run.sh 스크립트가 자동으로 변환하므로, 아래 변수들은 설정하지 않아도 됩니다.
 # (PROXMOX_API_URL, PROXMOX_API_TOKEN_ID, PROXMOX_API_TOKEN_SECRET가 자동 변환됨)
+
+# 선택: legacy state 자동 이관
+# backend/iac/terraform/terraform.tfstate -> infra/terraform workspace
+TF_AUTO_MIGRATE_LEGACY_STATE=false
+TF_AUTO_MIGRATE_LEGACY_STATE_FORCE=false
+TF_AUTO_MIGRATE_LEGACY_STATE_STRICT=false
+
+# 선택: Task 자동 아카이브
+# 완료된 task를 N일 후 자동 아카이브 (0이면 비활성화)
+TASK_AUTO_ARCHIVE_DAYS=14
+TASK_AUTO_ARCHIVE_CHECK_INTERVAL_SECONDS=300
 
 # ============================================
 # Ansible 설정
@@ -497,19 +510,30 @@ FRONTEND_PORT=5173
 - `.env` 파일의 Proxmox API 정보 확인
 - 환경 변수가 `TF_VAR_` 접두사로 설정되었는지 확인 (`run.sh`가 자동 처리)
 - Terraform이 설치되어 있는지 확인 (`terraform version`)
-- Terraform 로그 확인 (`backend.log` 또는 `backend/iac/terraform/terraform.log`)
+- Terraform 로그 확인 (`backend.log` 또는 `infra/terraform/` 작업 로그)
 
 ### Ansible 실행 실패
 - Ansible이 설치되어 있는지 확인 (`ansible --version`)
 - SSH 키가 올바른 경로에 있는지 확인
-- Inventory 파일이 올바르게 생성되었는지 확인 (`backend/iac/ansible/inventory.yml`)
+- Inventory 파일이 올바르게 생성되었는지 확인 (`infra/ansible/inventory.yml`)
 - SSH 접속 테스트 (`ssh -i ~/.ssh/id_rsa root@<vm_ip>`)
 
 ### 로그가 실시간으로 업데이트되지 않음
 - 브라우저 콘솔에서 네트워크 오류 확인
 - 백엔드 로그에서 에러 메시지 확인 (`tail -f backend.log`)
 - `task_id`가 올바른지 확인
-- 폴링 간격 확인 (기본 2초)
+- `/api/tasks/stream` 연결이 유지되는지 확인 (Network 탭 EventStream)
+
+### Legacy state 이관 (기존 backend/iac 사용 환경)
+- 수동 이관 스크립트 실행:
+```bash
+python3 scripts/migrate_legacy_tf_state.py --workspace <workspace_name>
+```
+- 강제 이관이 필요하면:
+```bash
+python3 scripts/migrate_legacy_tf_state.py --workspace <workspace_name> --force
+```
+- 자동 이관이 필요하면 `.env`에 `TF_AUTO_MIGRATE_LEGACY_STATE=true` 설정
 
 ### Proxmox API 연결 실패
 - Proxmox 서버 URL이 올바른지 확인
@@ -592,6 +616,7 @@ curl http://localhost:8000/api/logs/{task_id}
 - [프론트엔드 README](./frontend/README.md)
 
 ### 기타 문서
+- [현재 실행 가이드](./docs/LOCAL_RUN_GUIDE.md)
 - [환경 변수 설명](./docs/ENV_SETTINGS_EXPLAINED.md)
 - [템플릿 준비](./docs/TEMPLATE_PREPARATION.md)
 - [VM 생성 방법](./docs/VM_CREATION_METHODS.md)

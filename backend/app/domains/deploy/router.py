@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Optional, List
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.services.deployment.service import DeploymentService
 
@@ -24,7 +24,6 @@ class DeployRequest(BaseModel):
     # Proxmox 리소스 선택 (마법사 스타일)
     server_id: Optional[str] = None
     template_id: Optional[str] = None
-    iso_image_id: Optional[str] = None  # ISO 이미지 ID (템플릿 없이 생성 시)
     storage_id: Optional[str] = None
     storage_type: Optional[str] = None
     network_ids: Optional[List[str]] = None
@@ -32,13 +31,16 @@ class DeployRequest(BaseModel):
     # VM 설정 (템플릿 미사용 시)
     cpu_cores: Optional[int] = None
     memory_gb: Optional[int] = None
+    disk_size_gb: Optional[int] = None
 
     # 인스턴스 이름
     server_name: Optional[str] = None
+    vm_ip: Optional[str] = None
+    vm_gateway: Optional[str] = None
 
     # Ansible 설정
-    ansible_packages: Optional[List[str]] = []
-    ansible_roles: Optional[List[str]] = []
+    ansible_packages: List[str] = Field(default_factory=list)
+    ansible_roles: List[str] = Field(default_factory=list)
 
     # 옵션 플래그
     skip_terraform: Optional[bool] = False
@@ -65,6 +67,12 @@ async def deploy(
     BackgroundTasks를 사용하여 비동기적으로 처리됩니다.
     """
     try:
+        if not (request.skip_terraform or False) and not request.template_id:
+            raise HTTPException(
+                status_code=400,
+                detail="현재 VM 생성은 template_id 기반 배포만 지원합니다.",
+            )
+
         deploy_request_dict = request.model_dump(exclude_none=True)
 
         task_id = deployment_service.start_deployment_with_request(
@@ -79,6 +87,8 @@ async def deploy(
             message="배포 작업이 시작되었습니다.",
             status="pending",
         )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(
             status_code=500,
@@ -87,4 +97,3 @@ async def deploy(
 
 
 __all__ = ["router"]
-

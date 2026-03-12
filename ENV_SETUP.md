@@ -118,6 +118,30 @@ CHAT_SESSION_TTL_SECONDS=604800
 CHAT_MAX_MESSAGES=100
 ```
 
+### 7. IP 풀 설정 (VM IP 자동 할당)
+
+VM 생성 시 고정 IP를 자동 할당하기 위한 IP 풀 설정입니다.
+설정하지 않으면 수동으로 IP를 입력해야 합니다.
+
+```bash
+# IP 풀 시작 주소
+IP_POOL_START=192.168.1.100
+
+# IP 풀 끝 주소
+IP_POOL_END=192.168.1.200
+
+# 게이트웨이 주소
+IP_GATEWAY=192.168.1.1
+
+# 서브넷 마스크 (CIDR 형식, 선택, 기본값: 24)
+IP_SUBNET=24
+```
+
+**동작 방식:**
+- "Auto Assign" 버튼 클릭 시 IP 풀에서 사용 가능한 IP를 찾습니다
+- ping으로 각 IP의 사용 여부를 확인합니다
+- 사용 중이 아닌 첫 번째 IP를 자동으로 할당합니다
+
 **Redis 설치 방법 (macOS):**
 ```bash
 # Homebrew로 설치
@@ -150,7 +174,7 @@ sudo systemctl enable redis-server
 
 ```bash
 # 프로젝트 루트에서
-cp env.example .env
+touch .env
 ```
 
 ### 2. 환경 파일 편집

@@ -1,449 +1,183 @@
-# 배포 플로우 상세
-
-## 배포 프로세스 개요
-
-배포 프로세스는 **Terraform**과 **Ansible**을 순차적으로 실행하여 인프라를 배포하고 설정합니다.
-
-```
-프론트엔드 요청
-    ↓
-POST /api/deploy
-    ↓
-DeploymentService 시작
-    ↓
-[1단계] Terraform Init
-    ↓
-[2단계] Terraform Plan
-    ↓
-[3단계] Terraform Apply
-    ↓
-[4단계] IP 주소 추출
-    ↓
-[5단계] Ansible Playbook 실행
-    ↓
-배포 완료
-```
-
-## 상세 플로우
-
-### 1. 배포 요청 수신
-
-**엔드포인트**: `POST /api/deploy`
-
-**요청 예시**:
-```json
-{
-  "server_id": "pve-node1",
-  "template_id": "pve-node1/100",
-  "storage_id": "local",
-  "network_ids": ["vmbr0"],
-  "cpu_cores": 2,
-  "memory_gb": 4,
-  "server_name": "my-vm",
-  "ansible_packages": ["nginx", "docker"],
-  "ansible_roles": ["docker"]
-}
-```
-
-**처리 과정**:
-1. `backend/app/domains/deploy/router.py` 의 `deploy()` 엔드포인트가 요청 수신
-2. Pydantic 모델(`DeployRequest`)로 데이터 검증
-3. `DeploymentService.start_deployment_with_request()` 호출
-
----
-
-### 2. 배포 작업 시작
-
-**서비스**: `DeploymentService.start_deployment_with_request()`
-
-**처리 과정**:
-1. 고유 `task_id` 생성 (UUID)
-2. `TaskManager.create_task(task_id)` - 작업 등록
-3. `TaskManager.update_status(task_id, PENDING)` - 상태 설정
-4. `BackgroundTasks.add_task(_execute_deployment, ...)` - 백그라운드 작업 등록
-5. 즉시 `task_id` 반환
-
-**응답**:
-```json
-{
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "message": "배포 작업이 시작되었습니다.",
-  "status": "pending"
-}
-```
-
-**중요**: 이 시점에서 HTTP 응답이 반환되며, 실제 배포는 백그라운드에서 비동기로 실행됩니다.
-
----
-
-### 3. 백그라운드 배포 실행
-
-**서비스**: `DeploymentService._execute_deployment()`
-
-이 메서드는 백그라운드에서 실행되며, 다음 단계를 순차적으로 수행합니다.
-
-#### 3.1 작업 상태 변경
-```python
-task_manager.update_status(task_id, TaskStatus.RUNNING)
-task_manager.append_log(task_id, "=== 배포 작업 시작 ===")
-```
-
-#### 3.2 배포 요청 정보 로깅
-```python
-if deploy_request:
-    task_manager.append_log(task_id, f"배포 설정: {deploy_request}")
-```
-
----
-
-### 4. Terraform 단계
-
-Terraform 단계는 `skip_terraform`이 `False`인 경우에만 실행됩니다.
-
-#### 4.1 Terraform Init
-
-**서비스**: `TerraformService.init(task_id)`
-
-**실행 명령어**:
-```bash
-terraform init
-```
-
-**작업 디렉토리**: `backend/iac/terraform/`
-
-**동작**:
-- Terraform 프로바이더 다운로드
-- 백엔드 초기화
-- 모듈 다운로드 (있는 경우)
-
-**로그 예시**:
-```
-[2024-01-01 12:00:01] [1/4] Terraform Init 실행 중...
-[2024-01-01 12:00:02] === Terraform Init 시작 ===
-[2024-01-01 12:00:02] 실행 명령어: terraform init
-[2024-01-01 12:00:02] 작업 디렉토리: /path/to/iac/terraform
-[2024-01-01 12:00:05] Initializing the backend...
-[2024-01-01 12:00:06] Initializing provider plugins...
-[2024-01-01 12:00:10] Terraform has been successfully initialized!
-```
-
-**실패 시**: 작업 상태를 `Failed`로 변경하고 중단
-
----
-
-#### 4.2 Terraform Plan
-
-**서비스**: `TerraformService.plan(task_id)`
-
-**실행 명령어**:
-```bash
-terraform plan
-```
-
-**동작**:
-- 변경 사항 미리보기
-- 리소스 생성/수정/삭제 계획 표시
-
-**로그 예시**:
-```
-[2024-01-01 12:00:11] [2/4] Terraform Plan 실행 중...
-[2024-01-01 12:00:11] === Terraform Plan 시작 ===
-[2024-01-01 12:00:11] 실행 명령어: terraform plan
-[2024-01-01 12:00:12] Terraform will perform the following actions:
-[2024-01-01 12:00:12]   # proxmox_vm.my_vm will be created
-[2024-01-01 12:00:12]   + resource "proxmox_vm" "my_vm" {
-[2024-01-01 12:00:15] Plan: 1 to add, 0 to change, 0 to destroy.
-```
-
-**특징**: Plan 실패는 치명적이지 않으므로 경고만 기록하고 계속 진행
-
----
-
-#### 4.3 Terraform Apply
-
-**서비스**: `TerraformService.apply(task_id, auto_approve=True, variables=terraform_vars)`
-
-**실행 명령어**:
-```bash
-terraform apply -auto-approve \
-  -var vm_name="my-vm" \
-  -var target_node="pve-node1" \
-  -var template_id="pve-node1/100" \
-  -var cpu_cores=2 \
-  -var memory_gb=4 \
-  -var disk_size_gb=50 \
-  -var storage_id="local" \
-  -var network_ids='["vmbr0"]' \
-  -var cloudinit_user_data="#cloud-config\n..."
-```
-
-**변수 변환 과정**:
-```python
-terraform_vars = {}
-if deploy_request.get("server_name"):
-    terraform_vars["vm_name"] = deploy_request["server_name"]
-if deploy_request.get("server_id"):
-    terraform_vars["target_node"] = deploy_request["server_id"]
-if deploy_request.get("template_id"):
-    terraform_vars["template_id"] = deploy_request["template_id"]
-# ... 기타 변수들
-```
-
-**Cloud-init user-data 생성**:
-- 템플릿이 없는 경우 (ISO 사용 시) 자동 생성
-- SSH 공개키를 자동으로 주입
-- 형식: `#cloud-config` YAML
-
-**로그 예시**:
-```
-[2024-01-01 12:00:16] [3/4] Terraform Apply 실행 중...
-[2024-01-01 12:00:16] === Terraform Apply 시작 ===
-[2024-01-01 12:00:16] Terraform 변수: {'vm_name': 'my-vm', 'target_node': 'pve-node1', ...}
-[2024-01-01 12:00:17] Cloud-init user-data 생성 완료 (SSH 키 자동 주입)
-[2024-01-01 12:00:17] 실행 명령어: terraform apply -auto-approve ...
-[2024-01-01 12:00:20] proxmox_vm.my_vm: Creating...
-[2024-01-01 12:00:25] proxmox_vm.my_vm: Creation complete after 5s
-[2024-01-01 12:00:25] Terraform Apply 완료
-```
-
-**실패 시**: 작업 상태를 `Failed`로 변경하고 중단
-
----
-
-#### 4.4 IP 주소 추출
-
-**서비스**: `TerraformService.get_output()`
-
-**실행 명령어**:
-```bash
-terraform output -json
-```
-
-**동작**:
-1. Terraform output을 JSON 형식으로 조회
-2. IP 주소 키 찾기 (`vm_ip`, `instance_ip`, `ip_address` 등)
-3. IP 주소 추출
-
-**로그 예시**:
-```
-[2024-01-01 12:00:26] Terraform Output에서 IP 주소 추출 중...
-[2024-01-01 12:00:26] Terraform Outputs: {'vm_ip': {'value': '192.168.1.100'}}
-[2024-01-01 12:00:26] 추출된 IP 주소: 192.168.1.100
-```
-
-**IP 주소가 없는 경우**: 경고만 기록하고 Ansible 단계는 건너뛰거나 수동 입력 필요
-
----
-
-### 5. Ansible 단계
-
-Ansible 단계는 `skip_ansible`이 `False`인 경우에만 실행됩니다.
-
-#### 5.1 Inventory 생성
-
-**서비스**: `AnsibleService.create_inventory(inventory_hosts, task_id)`
-
-**입력 데이터**:
-```python
-inventory_hosts = [{
-    "name": "proxmox_vm",
-    "ip": "192.168.1.100",  # Terraform에서 추출한 IP
-    "user": "root"  # ANSIBLE_SSH_USER 환경 변수 또는 기본값
-}]
-```
-
-**생성되는 inventory.yml**:
-```yaml
-all:
-  children:
-    proxmox_vms:
-      hosts:
-        proxmox_vm:
-          ansible_host: 192.168.1.100
-          ansible_user: root
-          ansible_ssh_private_key_file: /path/to/ssh/key
-  vars:
-    ansible_ssh_common_args: "-o StrictHostKeyChecking=no"
-```
-
-**로그 예시**:
-```
-[2024-01-01 12:00:27] [4/4] Ansible Playbook 실행 중...
-[2024-01-01 12:00:27] Inventory 파일 생성 완료: /path/to/iac/ansible/inventory.yml
-[2024-01-01 12:00:27] 호스트 수: 1
-[2024-01-01 12:00:27] Ansible Inventory에 IP 192.168.1.100 추가
-```
-
----
-
-#### 5.2 Ansible Playbook 실행
-
-**서비스**: `AnsibleService.run_playbook(playbook_file, task_id, extra_vars, inventory_hosts)`
-
-**실행 명령어**:
-```bash
-ansible-playbook playbook.yml \
-  -i inventory.yml \
-  -e 'packages_to_install=["nginx","docker"]' \
-  -e 'roles_to_apply=["docker"]'
-```
-
-**작업 디렉토리**: `backend/iac/ansible/`
-
-**extra_vars 구성**:
-```python
-extra_vars = {}
-if deploy_request.get("ansible_packages"):
-    extra_vars["packages_to_install"] = deploy_request["ansible_packages"]
-if deploy_request.get("ansible_roles"):
-    extra_vars["roles_to_apply"] = deploy_request["ansible_roles"]
-```
-
-**로그 예시**:
-```
-[2024-01-01 12:00:28] 실행 명령어: ansible-playbook playbook.yml -i inventory.yml ...
-[2024-01-01 12:00:28] 작업 디렉토리: /path/to/iac/ansible
-[2024-01-01 12:00:28] === Ansible Playbook 실행 시작 ===
-[2024-01-01 12:00:28] 설치할 패키지: nginx, docker
-[2024-01-01 12:00:28] 적용할 역할: docker
-[2024-01-01 12:00:29] PLAY [proxmox_vms] ****************************************
-[2024-01-01 12:00:30] TASK [Gathering Facts] ************************************
-[2024-01-01 12:00:32] ok: [proxmox_vm]
-[2024-01-01 12:00:33] TASK [Install packages] ************************************
-[2024-01-01 12:00:35] changed: [proxmox_vm] => (item=nginx)
-[2024-01-01 12:00:37] changed: [proxmox_vm] => (item=docker)
-[2024-01-01 12:00:40] PLAY RECAP **************************************************
-[2024-01-01 12:00:40] proxmox_vm: ok=5 changed=2 unreachable=0 failed=0
-[2024-01-01 12:00:40] === Ansible Playbook 실행 완료 ===
-```
-
-**실패 시**: 작업 상태를 `Failed`로 변경하고 중단
-
----
-
-### 6. 배포 완료
-
-**처리 과정**:
-```python
-task_manager.update_status(task_id, TaskStatus.SUCCESS)
-task_manager.append_log(task_id, "\n=== 배포 작업 완료 ===")
-```
-
-**최종 상태**:
-- `status`: `Success`
-- 로그에 전체 배포 과정 기록
-
----
-
-## 상태 조회 플로우
-
-프론트엔드는 배포 시작 후 `task_id`를 받아서 주기적으로 상태를 조회합니다.
-
-### 1. 상태 조회
-
-**엔드포인트**: `GET /api/status/{task_id}`
-
-**처리 과정**:
-1. `backend/app/domains/task/router.py` 의 `get_status()` 엔드포인트가 요청 수신
-2. `TaskManager.get_status(task_id)` 호출
-3. 메모리에서 작업 상태 조회
-4. 상태 정보 반환
-
-**응답 예시**:
-```json
-{
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "status": "Running",
-  "created_at": "2024-01-01T12:00:00",
-  "updated_at": "2024-01-01T12:05:00"
-}
-```
-
-### 2. 로그 조회
-
-**엔드포인트**: `GET /api/logs/{task_id}`
-
-**처리 과정**:
-1. `backend/app/domains/task/router.py` 의 `get_logs()` 엔드포인트가 요청 수신
-2. 작업 존재 여부 확인
-3. `TaskManager.get_logs(task_id)` 호출
-4. 누적된 모든 로그 반환
-
-**응답 예시**:
-```json
-{
-  "task_id": "550e8400-e29b-41d4-a716-446655440000",
-  "logs": [
-    "[2024-01-01 12:00:00] === 배포 작업 시작 ===",
-    "[2024-01-01 12:00:01] [1/4] Terraform Init 실행 중...",
-    ...
-  ],
-  "total_lines": 150
-}
-```
-
----
-
-## 에러 처리
-
-### Terraform 에러
-
-**예시**:
-```
-[2024-01-01 12:00:20] Error: resource creation failed
-[2024-01-01 12:00:20] Terraform Apply 실패: 명령어 실행 실패 (종료 코드: 1)
-```
-
-**처리**:
-- 작업 상태를 `Failed`로 변경
-- 에러 로그 기록
-- Ansible 단계는 실행하지 않음
-
-### Ansible 에러
-
-**예시**:
-```
-[2024-01-01 12:00:35] fatal: [proxmox_vm]: UNREACHABLE! => ...
-[2024-01-01 12:00:35] Ansible Playbook 실행 실패: Playbook 실행 실패 (종료 코드: 2)
-```
-
-**처리**:
-- 작업 상태를 `Failed`로 변경
-- 에러 로그 기록
-- Terraform으로 생성된 리소스는 그대로 유지 (수동 정리 필요)
-
-### 예외 처리
-
-**예시**:
-```python
-except Exception as e:
-    error_msg = f"배포 작업 중 예외 발생: {str(e)}"
-    task_manager.update_status(task_id, TaskStatus.FAILED)
-    task_manager.append_log(task_id, f"EXCEPTION: {error_msg}")
-```
-
----
-
-## 타임라인 예시
-
-```
-12:00:00 - 프론트엔드: POST /api/deploy
-12:00:00 - 백엔드: task_id 생성 및 반환
-12:00:01 - Terraform Init 시작
-12:00:05 - Terraform Init 완료
-12:00:06 - Terraform Plan 시작
-12:00:10 - Terraform Plan 완료
-12:00:11 - Terraform Apply 시작
-12:00:25 - Terraform Apply 완료 (VM 생성)
-12:00:26 - IP 주소 추출: 192.168.1.100
-12:00:27 - Ansible Inventory 생성
-12:00:28 - Ansible Playbook 실행 시작
-12:00:40 - Ansible Playbook 완료
-12:00:41 - 배포 작업 완료 (Success)
-```
-
----
-
-## 다음 문서
-
-- [06_RUNNING.md](./06_RUNNING.md) - 실행 방법 및 설정
+# Deployment Flow
+
+이 문서는 `POST /api/deploy` 요청이 실제로 어떤 순서로 Terraform 과 Ansible 까지 이어지는지 정리한다.
+
+기준 파일:
+
+- `backend/app/domains/deploy/router.py`
+- `backend/app/services/deployment/service.py`
+- `backend/app/services/terraform/__init__.py`
+- `backend/app/services/ansible/__init__.py`
+
+## 1. 요청 수신
+
+프론트 또는 LLM 액션이 `POST /api/deploy` 를 호출한다.
+
+주요 입력:
+
+- 배포 대상 노드 `server_id`
+- 템플릿 `template_id`
+- VM 자원 스펙
+- 스토리지 / 네트워크
+- VM 이름
+- 선택 패키지 / 역할
+- 고정 IP / gateway
+
+## 2. Task 생성
+
+DeploymentService 는 먼저 `task_id` 를 만들고 TaskManager 에 메타데이터를 저장한다.
+
+메타데이터 예:
+
+- `action=deploy`
+- `server_name`
+- `server_id`
+- `template_id`
+- `storage_id`
+- `network_ids`
+- `cpu_cores`
+- `memory_gb`
+- `requested_vm_ip`
+- `requested_vm_gateway`
+- `ansible_packages`
+- `ansible_roles`
+
+그 뒤 FastAPI `BackgroundTasks` 로 실제 배포 함수를 예약한다.
+
+## 3. Workspace 결정
+
+실행 시작 시 workspace key 를 정한다.
+
+우선순위:
+
+1. `server_name`
+2. 없으면 `task-<id>`
+
+이 값은 Terraform workspace 이름으로 정규화돼 state 분리에 사용된다.
+
+## 4. Terraform 단계
+
+### 4.1 `init`
+
+- 작업 디렉터리: `infra/terraform`
+- 실패 시 즉시 task 실패
+
+### 4.2 workspace select/create
+
+- 있으면 `terraform workspace select`
+- 없으면 `terraform workspace new`
+
+### 4.3 optional legacy state migration
+
+아래 환경변수가 켜져 있을 때만 동작한다.
+
+- `TF_AUTO_MIGRATE_LEGACY_STATE`
+- `TF_AUTO_MIGRATE_LEGACY_STATE_FORCE`
+- `TF_AUTO_MIGRATE_LEGACY_STATE_STRICT`
+
+legacy source 기본 경로:
+
+- `backend/iac/terraform/terraform.tfstate`
+
+### 4.4 `plan`
+
+- 경고성 실패는 로그만 남기고 계속 갈 수 있다
+
+### 4.5 `apply`
+
+DeploymentService 가 요청값을 Terraform 변수로 바꾼다.
+
+대표 매핑:
+
+- `server_name` -> `vm_name`
+- `server_id` -> `target_node`
+- `template_id` -> `template_id`
+- `cpu_cores` -> `cpu_cores`
+- `memory_gb` -> `memory_gb`
+- `disk_size_gb` -> `disk_size_gb`
+- `storage_id` -> `storage_id`
+- `network_ids` -> `network_ids`
+- `vm_ip` -> `vm_ip`
+- `vm_gateway` -> `vm_gateway`
+
+추가 매핑:
+
+- SSH 공개키 -> `ssh_public_key`
+- `ANSIBLE_SSH_USER` -> `ssh_user`
+
+## 5. Terraform output 처리
+
+`apply` 후 백엔드는 Terraform output 에서 VM IP 를 찾는다.
+
+조회 후보 키:
+
+- `vm_ip`
+- `instance_ip`
+- `ip_address`
+- `ip`
+- `default_ipv4_address`
+
+`infra/terraform/main.tf` 의 현재 출력은 `vm_ip`, `vm_id`, `vm_name` 다.
+
+## 6. Ansible 단계 진입 조건
+
+Ansible 은 아래 조건일 때만 자동으로 실행된다.
+
+- `skip_ansible` 가 아님
+- Terraform 을 건너뛰지 않았거나, 별도 inventory 호스트를 구성할 수 있음
+- VM IP 를 확보함
+
+VM IP 를 못 얻으면 로그에 이유를 남기고 Ansible 을 건너뛴다.
+
+## 7. Inventory 생성
+
+백엔드는 단일 호스트 inventory 를 만든다.
+
+예상 값:
+
+- host name: `proxmox_vm`
+- IP: Terraform output 기반
+- user: `ANSIBLE_SSH_USER` 또는 `root`
+
+## 8. Ansible extra vars
+
+요청에서 선택한 값이 다음과 같이 전달된다.
+
+- `ansible_packages` -> `packages_to_install`
+- `ansible_roles` -> `roles_to_apply`
+
+## 9. 완료/실패 처리
+
+성공 시:
+
+- task status -> `Success`
+- 진행률 98 부근까지 업데이트
+- 완료 로그 기록
+
+실패 시:
+
+- task status -> `Failed`
+- 마지막 에러 로그 기록
+
+## 10. 실제로 자주 깨지는 지점
+
+### 템플릿 clone
+
+템플릿 ID, 스토리지, 네트워크 조합이 Proxmox 실제 상태와 맞지 않으면 Terraform 에서 실패한다.
+
+### guest agent / IP 추출
+
+DHCP 템플릿에 guest agent 가 없으면 VM 생성은 성공했는데 IP 추출이 실패하고, 그 결과 Ansible 이 건너뛰어진다.
+
+### SSH 키
+
+공개키를 못 읽으면 VM 내부 계정에 키 주입이 안 되고 Ansible SSH 접속이 깨질 수 있다.
+
+### Ansible playbook 의 느슨한 실패 처리
+
+플레이북이 이제 fail-fast 로 동작하므로 패키지 설치/서비스 시작 오류가 바로 작업 실패로 이어진다.
+
+## 11. 현재 문서상 꼭 알아야 할 제한
+
+- `destroy` API 플로우는 현재 활성화돼 있지 않다.
+- 여러 배포가 동시에 `infra/ansible/inventory.yml` 을 덮어쓸 수 있다.

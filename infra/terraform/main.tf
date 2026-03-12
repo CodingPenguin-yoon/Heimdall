@@ -105,24 +105,47 @@ variable "network_ids" {
   default     = ["vmbr0"]
 }
 
-variable "iso_file" {
-  description = "ISO 파일 경로 (선택사항)"
+variable "ssh_public_key" {
+  description = "SSH 공개키 (VM에 주입)"
   type        = string
   default     = ""
 }
 
-variable "cloudinit_user_data" {
-  description = "Cloud-init user data (선택사항)"
+variable "ssh_user" {
+  description = "SSH 사용자 이름"
+  type        = string
+  default     = "root"
+}
+
+variable "vm_operation_timeout_seconds" {
+  description = "VM clone/create/move/start 관련 타임아웃(초)"
+  type        = number
+  default     = 5400
+}
+
+variable "vm_stop_timeout_seconds" {
+  description = "VM stop 타임아웃(초)"
+  type        = number
+  default     = 600
+}
+
+variable "vm_ip" {
+  description = "VM 고정 IP 주소 (CIDR 형식: 192.168.1.100/24)"
   type        = string
   default     = ""
 }
 
-# 템플릿 ID에서 VM ID 추출 (node/vmid 형식 지원)
+variable "vm_gateway" {
+  description = "VM 게이트웨이 주소"
+  type        = string
+  default     = ""
+}
+
+# 템플릿 ID 파싱 (node/vmid 형식 지원)
 locals {
-  # template_id가 "node/vmid" 형식이면 vmid만 추출, 아니면 그대로 사용
-  clone_vm_id = var.template_id != "" ? (
-    can(regex("/", var.template_id)) ? tonumber(split("/", var.template_id)[1]) : tonumber(var.template_id)
-  ) : 0
+  template_id_parts = split("/", var.template_id)
+  clone_source_node = var.template_id != "" && length(local.template_id_parts) > 1 ? trimspace(local.template_id_parts[0]) : null
+  clone_vm_id       = var.template_id != "" ? tonumber(length(local.template_id_parts) > 1 ? local.template_id_parts[1] : local.template_id_parts[0]) : 0
 }
 
 # Proxmox VM 리소스 생성
@@ -136,8 +159,9 @@ resource "proxmox_virtual_environment_vm" "instance" {
   dynamic "clone" {
     for_each = local.clone_vm_id > 0 ? [1] : []
     content {
-      vm_id = local.clone_vm_id
-      full  = true
+      vm_id     = local.clone_vm_id
+      node_name = local.clone_source_node
+      full      = true
     }
   }
 
@@ -169,16 +193,45 @@ resource "proxmox_virtual_environment_vm" "instance" {
   # Cloud-init 설정
   initialization {
     datastore_id = var.storage_id
-    ip_config {
-      ipv4 {
-        address = "dhcp"
+
+    # SSH 키 주입 (cloud-init user_account)
+    dynamic "user_account" {
+      for_each = var.ssh_public_key != "" ? [1] : []
+      content {
+        username = var.ssh_user
+        keys     = [var.ssh_public_key]
       }
     }
+
+    ip_config {
+      ipv4 {
+        # 고정 IP가 설정되면 사용, 아니면 DHCP
+        address = var.vm_ip != "" ? var.vm_ip : "dhcp"
+        gateway = var.vm_ip != "" && var.vm_gateway != "" ? var.vm_gateway : null
+      }
+    }
+  }
+
+  # QEMU Guest Agent 설정
+  # 고정 IP 사용 시 agent 불필요, DHCP 사용 시 IP 조회를 위해 필요
+  agent {
+    enabled = var.vm_ip == "" # 고정 IP면 비활성화
+    timeout = "2m"
   }
 
   # VM 시작 설정
   started = true
   on_boot = true
+
+  # NFS 템플릿 복제/디스크 이동이 느린 환경을 고려해 타임아웃 상향
+  timeout_clone       = var.vm_operation_timeout_seconds
+  timeout_create      = var.vm_operation_timeout_seconds
+  timeout_migrate     = var.vm_operation_timeout_seconds
+  timeout_move_disk   = var.vm_operation_timeout_seconds
+  timeout_reboot      = var.vm_operation_timeout_seconds
+  timeout_shutdown_vm = var.vm_operation_timeout_seconds
+  timeout_start_vm    = var.vm_operation_timeout_seconds
+  timeout_stop_vm     = var.vm_stop_timeout_seconds
 
   lifecycle {
     ignore_changes = [
@@ -191,10 +244,16 @@ resource "proxmox_virtual_environment_vm" "instance" {
 # VM 정보 출력
 output "vm_ip" {
   description = "생성된 VM의 IP 주소"
-  value       = length(proxmox_virtual_environment_vm.instance) > 0 ? (
-    length(proxmox_virtual_environment_vm.instance[0].ipv4_addresses) > 1 ?
-    proxmox_virtual_environment_vm.instance[0].ipv4_addresses[1][0] : null
-  ) : null
+  value = var.vm_ip != "" ? (
+    # 고정 IP 설정된 경우: CIDR에서 IP만 추출 (192.168.1.100/24 -> 192.168.1.100)
+    split("/", var.vm_ip)[0]
+    ) : (
+    # DHCP 사용 시: agent에서 가져온 IP
+    length(proxmox_virtual_environment_vm.instance) > 0 ? (
+      length(proxmox_virtual_environment_vm.instance[0].ipv4_addresses) > 1 ?
+      proxmox_virtual_environment_vm.instance[0].ipv4_addresses[1][0] : null
+    ) : null
+  )
 }
 
 output "vm_id" {

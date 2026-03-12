@@ -1,12 +1,22 @@
 import { useState, useEffect } from 'react'
 import { Server, Cpu, HardDrive, Trash2, RefreshCw, Loader2, AlertCircle, ChevronDown, ChevronRight } from 'lucide-react'
-import { getInstances, getServers, destroyInfrastructure } from '../services/api'
+import { getInstances, getServers, terminateInstance } from '../services/api'
+
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+})
+
+function naturalCompare(left, right) {
+  return naturalCollator.compare(String(left ?? ''), String(right ?? ''))
+}
 
 function InstanceList({ onLogsUpdate, onStatusChange }) {
   const [instances, setInstances] = useState([])
   const [servers, setServers] = useState([])
   const [groupedInstances, setGroupedInstances] = useState({})
   const [expandedServers, setExpandedServers] = useState(new Set())
+  const [terminatingInstanceKeys, setTerminatingInstanceKeys] = useState(new Set())
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -36,9 +46,9 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
       
       // 서버 목록을 이름순으로 정렬하여 일정한 순서 유지
       const sortedServers = [...serversList].sort((a, b) => {
-        const nameA = (a.name || a.server_name || a.server_id || a.id || '').toLowerCase()
-        const nameB = (b.name || b.server_name || b.server_id || b.id || '').toLowerCase()
-        return nameA.localeCompare(nameB)
+        const nameA = a.name || a.server_name || a.server_id || a.id || ''
+        const nameB = b.name || b.server_name || b.server_id || b.id || ''
+        return naturalCompare(nameA, nameB)
       })
       
       // 서버별로 인스턴스 그룹화
@@ -67,25 +77,12 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
         }
       })
       
-      // 각 서버의 인스턴스 정렬: 상태(running 우선) → 이름순
+      // 각 서버의 인스턴스 정렬: 이름 기준 자연 오름차순
       Object.keys(grouped).forEach(serverId => {
         grouped[serverId].instances.sort((a, b) => {
-          // 상태 우선순위: running > stopped > 기타
-          const statusOrder = { 'running': 0, 'stopped': 1 }
-          const statusA = (a.status || '').toLowerCase()
-          const statusB = (b.status || '').toLowerCase()
-          const statusPriorityA = statusOrder[statusA] !== undefined ? statusOrder[statusA] : 2
-          const statusPriorityB = statusOrder[statusB] !== undefined ? statusOrder[statusB] : 2
-          
-          // 상태가 다르면 상태 우선순위로 정렬
-          if (statusPriorityA !== statusPriorityB) {
-            return statusPriorityA - statusPriorityB
-          }
-          
-          // 상태가 같으면 이름순으로 정렬
-          const nameA = (a.name || a.server_name || `vm-${a.vmid || ''}`).toLowerCase()
-          const nameB = (b.name || b.server_name || `vm-${b.vmid || ''}`).toLowerCase()
-          return nameA.localeCompare(nameB)
+          const nameA = a.name || a.server_name || `vm-${a.vmid || ''}`
+          const nameB = b.name || b.server_name || `vm-${b.vmid || ''}`
+          return naturalCompare(nameA, nameB)
         })
       })
       
@@ -117,22 +114,54 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
     return () => clearInterval(interval)
   }, [])
 
-  const handleDestroy = async (serverName) => {
-    if (!confirm(`Are you sure you want to terminate instance "${serverName}"?`)) {
+  const getInstanceKey = (instance) => {
+    const node = instance?.node || 'unknown-node'
+    const vmid = instance?.vmid || instance?.vm_id || instance?.id || 'unknown-vm'
+    return `${node}:${vmid}`
+  }
+
+  const handleDestroy = async (instance) => {
+    const serverName = instance?.name || instance?.server_name || `VM ${instance?.vmid || ''}`
+    const node = instance?.node
+    const vmid = instance?.vmid
+    const instanceKey = getInstanceKey(instance)
+
+    if (!node || vmid === undefined || vmid === null) {
+      addLog(`Cannot terminate instance "${serverName}": missing node/vmid`, 'error')
+      return
+    }
+
+    if (!confirm(`"${serverName}" 인스턴스를 종료 후 삭제하시겠습니까?\n(1차 확인)`)) {
+      return
+    }
+    if (!confirm(`마지막 확인입니다.\n"${serverName}" 인스턴스를 정말 종료/삭제할까요?`)) {
       return
     }
 
     try {
+      setTerminatingInstanceKeys((prev) => {
+        const next = new Set(prev)
+        next.add(instanceKey)
+        return next
+      })
       onStatusChange('destroying')
-      addLog(`Terminating instance: ${serverName}...`, 'info')
-      await destroyInfrastructure(serverName)
-      addLog(`Instance "${serverName}" terminated successfully`, 'success')
+      addLog(`Terminating instance "${serverName}" (${node}/${vmid})...`, 'info')
+      const response = await terminateInstance({ node, vmid })
+      const resultMessage = response.data?.message || `Instance "${serverName}" terminated successfully`
+      addLog(resultMessage, 'success')
       onStatusChange('idle')
       // 목록 새로고침
       await fetchInstances()
     } catch (error) {
-      addLog(`Failed to terminate instance: ${error.message}`, 'error')
+      const errorMessage = error.response?.data?.detail || error.message
+      addLog(`Failed to terminate instance: ${errorMessage}`, 'error')
       onStatusChange('error')
+    } finally {
+      setTerminatingInstanceKeys((prev) => {
+        const next = new Set(prev)
+        next.delete(instanceKey)
+        return next
+      })
     }
   }
 
@@ -201,13 +230,9 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
           <div className="space-y-4">
             {Object.entries(groupedInstances)
               .sort(([idA], [idB]) => {
-                // Unknown은 맨 뒤로
-                if (idA === 'Unknown') return 1
-                if (idB === 'Unknown') return -1
-                // 서버 이름순으로 정렬
-                const nameA = (groupedInstances[idA]?.server?.name || idA).toLowerCase()
-                const nameB = (groupedInstances[idB]?.server?.name || idB).toLowerCase()
-                return nameA.localeCompare(nameB)
+                const nameA = groupedInstances[idA]?.server?.name || idA
+                const nameB = groupedInstances[idB]?.server?.name || idB
+                return naturalCompare(nameA, nameB)
               })
               .map(([serverId, group]) => {
               const isExpanded = expandedServers.has(serverId)
@@ -280,6 +305,8 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
                             <tbody>
                               {serverInstances.map((instance, index) => {
                                 const instanceName = instance.name || instance.server_name || `VM ${instance.vmid || ''}`
+                                const instanceKey = getInstanceKey(instance)
+                                const isTerminating = terminatingInstanceKeys.has(instanceKey)
                                 return (
                                   <tr
                                     key={instance.id || instance.vm_id || index}
@@ -333,11 +360,21 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
                                     <td className="py-4 px-4">
                                       <div className="flex justify-end">
                                         <button
-                                          onClick={() => handleDestroy(instance.name || instance.server_name)}
-                                          className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-md transition-colors whitespace-nowrap"
+                                          onClick={() => handleDestroy(instance)}
+                                          disabled={isTerminating}
+                                          className="flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-red-600 hover:bg-red-50 rounded-md transition-colors whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
-                                          <Trash2 className="w-4 h-4" />
-                                          Terminate
+                                          {isTerminating ? (
+                                            <>
+                                              <Loader2 className="w-4 h-4 animate-spin" />
+                                              Terminating...
+                                            </>
+                                          ) : (
+                                            <>
+                                              <Trash2 className="w-4 h-4" />
+                                              Terminate
+                                            </>
+                                          )}
                                         </button>
                                       </div>
                                     </td>

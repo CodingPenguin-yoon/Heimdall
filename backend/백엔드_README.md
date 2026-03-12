@@ -50,7 +50,7 @@ backend/
 │       ├── __init__.py
 │       ├── deployment/             # 배포 도메인
 │       │   └── service.py          # DeploymentService (Terraform+Ansible 통합)
-│       ├── terraform_service.py    # Terraform 실행 서비스
+│       ├── terraform/__init__.py    # Terraform 실행 서비스
 │       ├── ansible/                # Ansible 실행 서비스
 │       │   └── __init__.py
 │       ├── proxmox/                # Proxmox API 연동 서비스
@@ -89,7 +89,7 @@ backend/
   - 네트워크 부하 최소화
 
 #### ⚙️ 제어 (Terraform 사용)
-- **서비스**: `terraform_service.py`, `deployment/service.py`
+- **서비스**: `terraform/__init__.py`, `deployment/service.py`
 - **도메인 라우터**: `domains/deploy/router.py`
 - **용도**: 리소스 생성/수정/삭제 (VM 생성, 설정 변경 등)
 - **방식**: Terraform IaC (Infrastructure as Code)
@@ -327,7 +327,7 @@ VM 목록 조회 (템플릿 제외)
 - 작업별 로그 수집 및 관리
 - 작업 상태 변경 추적
 
-### TerraformService (`terraform_service.py`)
+### TerraformService (`terraform/__init__.py`)
 - Terraform 명령어 실행 (`init`, `plan`, `apply`, `output`)
 - 실시간 로그 캡처
 - Terraform 출력 파싱 및 IP 주소 추출
