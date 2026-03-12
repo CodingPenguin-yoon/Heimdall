@@ -2,6 +2,15 @@ import { useState, useEffect } from 'react'
 import { Activity, Server, Cpu, HardDrive, TrendingUp, RefreshCw, Loader2, AlertCircle, Database } from 'lucide-react'
 import { getNodesMonitoring } from '../services/api'
 
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+})
+
+function naturalCompare(left, right) {
+  return naturalCollator.compare(String(left ?? ''), String(right ?? ''))
+}
+
 function MonitoringDashboard() {
   const [nodes, setNodes] = useState([])
   const [loading, setLoading] = useState(true)
@@ -92,9 +101,9 @@ function MonitoringDashboard() {
         ) : (
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
             {[...nodes].sort((a, b) => {
-              const nameA = (a.name || a.node || '').toLowerCase()
-              const nameB = (b.name || b.node || '').toLowerCase()
-              return nameA.localeCompare(nameB)
+              const nameA = a.name || a.node || ''
+              const nameB = b.name || b.node || ''
+              return naturalCompare(nameA, nameB)
             }).map((node) => (
               <div key={node.node} className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
                 {/* Node Header */}
@@ -166,19 +175,9 @@ function MonitoringDashboard() {
                       </div>
                       <div className="space-y-2">
                         {[...(node.storages || [])].sort((a, b) => {
-                          // NFS 타입은 맨 마지막에 정렬
-                          const isNfsA = (a.type || '').toLowerCase() === 'nfs'
-                          const isNfsB = (b.type || '').toLowerCase() === 'nfs'
-                          
-                          // NFS 여부로 먼저 비교 (NFS가 아닌 것이 먼저)
-                          if (isNfsA !== isNfsB) {
-                            return isNfsA ? 1 : -1
-                          }
-                          
-                          // 같은 타입이면 이름순으로 정렬
-                          const nameA = (a.name || '').toLowerCase()
-                          const nameB = (b.name || '').toLowerCase()
-                          return nameA.localeCompare(nameB)
+                          const nameA = a.name || ''
+                          const nameB = b.name || ''
+                          return naturalCompare(nameA, nameB)
                         }).map((storage, index) => (
                           <div key={index} className="border border-gray-200 rounded-md p-2.5 bg-gray-50">
                             <div className="flex items-center justify-between mb-1.5">

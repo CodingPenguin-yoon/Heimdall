@@ -15,6 +15,7 @@ override.tf.json
 *_override.tf.json
 .terraformrc
 terraform.rc
+infra/terraform/.state-migration-backups/
 
 # 환경 변수 파일
 .env
@@ -49,6 +50,10 @@ Thumbs.db
 
 # 로그 파일
 *.log
+
+# 런타임 태스크 히스토리 캐시
+backend/data/task_history.json
+backend/data/task_history.tmp
 
 # 백업 파일
 *.bak

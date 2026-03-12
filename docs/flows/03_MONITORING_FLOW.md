@@ -1,127 +1,93 @@
-## 모니터링 플로우 (웹 대시보드 → Proxmox 지표)
+# Flow 03: Monitoring
 
-이 문서는 **프론트엔드 모니터링 대시보드에서 Proxmox 노드/VM의 상태와 지표를 가져오는 전체 흐름**을 단계별로 정리합니다.
+이 문서는 모니터링 화면이 어떤 API 를 호출하고, 백엔드가 어떤 데이터를 조합해서 반환하는지 정리한다.
 
-### 1. 사용자 액션 (Monitoring 탭)
+기준 파일:
 
-- **화면**: `MonitoringDashboard` (`frontend/src/components/MonitoringDashboard.jsx`)
-- **탭**: `App.jsx` 의 `/monitoring` 탭
-- **주요 기능**
-  - 전체 노드 목록 및 상태 요약 조회
-  - 특정 노드 선택 시 상세 리소스 사용량 조회
-  - 특정 VM 선택 시 CPU/메모리/디스크/네트워크 지표 조회
+- `frontend/src/components/MonitoringDashboard.jsx`
+- `frontend/src/services/api.js`
+- `backend/app/domains/proxmox/router.py`
+- `backend/app/services/proxmox/__init__.py`
 
-### 2. 프론트엔드 → 모니터링 API 호출
+## 1. 프론트 호출 방식
 
-- **유틸 함수들** (`frontend/src/services/api.js`)
-  - `getNodesMonitoring()` → `GET /api/monitoring/nodes`
-  - `getNodeMonitoring(nodeId)` → `GET /api/monitoring/nodes/{node_id}`
-  - `getVMMonitoring(nodeId, vmid)` → `GET /api/monitoring/vms/{node_id}/{vmid}`
+모니터링 화면 `/monitoring` 은 현재 단일 API 만 주기적으로 호출한다.
 
-각 함수는 Axios 클라이언트(`apiClient`) 를 통해 `/api` 프리픽스 하위 엔드포인트를 호출합니다.
-
-### 3. 백엔드 도메인 라우터 처리 (`backend/app/domains/proxmox/router.py`)
-
-모니터링 관련 엔드포인트는 Proxmox 도메인 라우터에 정의되어 있습니다.
-
-- **파일**: `backend/app/domains/proxmox/router.py`
-- **서비스**: `ProxmoxService` (`backend/app/services/proxmox/__init__.py`)
-
-#### 3-1. 모든 노드 모니터링 (`GET /api/monitoring/nodes`)
-
-```python
-@router.get("/monitoring/nodes")
-async def get_nodes_monitoring():
-    monitoring_data = proxmox_service.get_all_nodes_monitoring()
-    return {"nodes": monitoring_data}
+```text
+GET /api/monitoring/nodes
 ```
 
-- 역할:
-  1. Proxmox 전체 노드 목록 조회
-  2. 각 노드의 상태와 리소스 사용량을 수집
-  3. CPU/메모리/디스크 사용률 등을 계산한 요약 데이터를 리스트로 반환
+주기:
 
-#### 3-2. 특정 노드 모니터링 (`GET /api/monitoring/nodes/{node_id}`)
+- 최초 마운트 시 1회
+- 이후 30초마다 자동 새로고침
+- 수동 Refresh 버튼으로 즉시 재호출 가능
 
-```python
-@router.get("/monitoring/nodes/{node_id}")
-async def get_node_monitoring(node_id: str):
-    status = proxmox_service.get_node_status(node_id)
-    rrd_data = proxmox_service.get_node_rrddata(node_id, timeframe="hour")
-    return {"node": node_id, "status": status, "rrd_data": rrd_data}
+## 2. 프론트가 실제로 쓰는 데이터
+
+`MonitoringDashboard.jsx` 는 응답의 `nodes` 배열을 카드로 그린다.
+
+주로 쓰는 필드:
+
+- `name`
+- `node`
+- `status`
+- `uptime`
+- `cpu_usage_percent`
+- `cpu_total`
+- `memory_usage_percent`
+- `memory_used_gb`
+- `memory_total_gb`
+- `storages`
+- `load_avg`
+
+현재 화면은 개별 노드 상세 API 나 개별 VM 모니터링 API 를 사용하지 않는다.
+
+## 3. 백엔드 처리
+
+라우터:
+
+```text
+GET /api/monitoring/nodes
 ```
 
-- 역할:
-  1. 노드의 현재 상태(`status`) 정보를 Proxmox API로부터 조회
-  2. RRD(Round Robin Database) 형태의 시계열 메트릭(`rrd_data`) 조회
-  3. 프론트엔드가 그래프/차트로 표현할 수 있는 데이터 구조로 전달
+핸들러는 `ProxmoxService.get_all_nodes_monitoring()` 결과를 그대로 `{ "nodes": ... }` 형태로 반환한다.
 
-#### 3-3. 특정 VM 모니터링 (`GET /api/monitoring/vms/{node_id}/{vmid}`)
+## 4. ProxmoxService 내부 의미
 
-```python
-@router.get("/monitoring/vms/{node_id}/{vmid}")
-async def get_vm_monitoring(node_id: str, vmid: int):
-    status = proxmox_service.get_vm_status(node_id, vmid)
-    rrd_data = proxmox_service.get_vm_rrddata(node_id, vmid, timeframe="hour")
-    return {"node": node_id, "vmid": vmid, "status": status, "rrd_data": rrd_data}
-```
+이 서비스는 노드별로 대략 아래 정보를 모은다.
 
-- 역할:
-  1. 특정 VM 의 상태 정보 조회 (전원 상태, 리소스 할당 등)
-  2. CPU/메모리/디스크/네트워크 사용량 시계열 데이터 조회
-  3. 프론트엔드가 선택된 VM 에 대한 상세 모니터링 화면을 구성할 수 있도록 지원
+- 노드 상태
+- RRD 데이터
+- CPU / 메모리 사용률
+- storage 별 사용량
+- load average
 
-### 4. ProxmoxService 내부 동작
+즉 프론트는 이미 집계된 데이터를 받는 구조다.
 
-- **파일**: `backend/app/services/proxmox/__init__.py` (대형 모듈)
-- **역할 요약**
-  - Proxmox HTTP API 호출 래퍼
-  - 노드/VM/스토리지/네트워크/ISO/모니터링 데이터 조회
-  - 조회 전용(Read-only) 원칙 유지 (생성/수정/삭제는 Terraform 을 통해 수행)
+## 5. 현재 있지만 UI 에서 안 쓰는 API
 
-모니터링 관련 주요 메서드(요약):
+- `GET /api/monitoring/nodes/{node_id}`
+- `GET /api/monitoring/vms/{node_id}/{vmid}`
 
-- `get_all_nodes_monitoring()`
-  - 모든 노드에 대해:
-    - 상태 정보 조회 (`/nodes/{node}/status`)
-    - RRD 데이터 조회 (`/nodes/{node}/rrddata`)
-    - CPU/메모리/디스크 사용률 계산
-  - 리스트 형태의 요약 데이터 반환
+이 둘은 현재 `MonitoringDashboard` 에 연결되어 있지 않다.
 
-- `get_node_status(node)`
-- `get_node_rrddata(node, timeframe)`
-- `get_vm_status(node, vmid)`
-- `get_vm_rrddata(node, vmid, timeframe)`
+## 6. 이 흐름의 장점
 
-### 5. 프론트엔드 표시 흐름
+- 프론트가 단순하다
+- 노드 단위 overview 를 빠르게 보여 줄 수 있다
+- 폴링 주기가 명확하다
 
-1. Monitoring 탭 진입 시:
-   - `getNodesMonitoring()` 호출 → 전체 노드 리스트와 리소스 요약 수신
-   - 카드/테이블 형태로 노드별 상태/사용률 표시
-2. 특정 노드 선택 시:
-   - `getNodeMonitoring(nodeId)` 호출
-   - 노드의 상세 리소스 그래프/상태 패널 구성
-3. 특정 VM 선택 시:
-   - `getVMMonitoring(nodeId, vmid)` 호출
-   - VM 의 CPU/메모리/디스크/네트워크 타임라인 그래프 렌더링
+## 7. 이 흐름의 한계
 
-### 6. 배포/LLM 플로우와의 관계
+- 개별 VM drill-down 이 없다
+- 최근 시계열을 프론트에서 적극적으로 활용하지 않는다
+- 전체 노드 집계를 매 30초마다 한 번에 다시 가져온다
+- Proxmox API 가 느리면 모니터링 화면 체감도 바로 떨어진다
 
-- 모니터링 플로우는 **조회 전용(Read-only)** 이며, 배포/삭제와는 분리되어 있습니다.
-- 그러나 다음과 같이 유기적으로 연결됩니다.
-  1. 배포 플로우에서 생성된 VM 들은 Proxmox 상에 정상 등록되며
-  2. 모니터링 플로우에서 동일한 노드/VM ID 를 사용해 상태/지표를 조회
-  3. LLM 플로우에서 `list_vms`/`get_vm_detail` 액션으로 조회한 결과도,  
-     ProxmoxService 를 통해 같은 소스(Proxmox API)에서 가져옵니다.
+## 8. 운영 시 확인 포인트
 
-### 7. 모니터링 플로우 요약
-
-1. 사용자: Monitoring 탭에서 노드/VM 선택
-2. 프론트엔드: `getNodesMonitoring` / `getNodeMonitoring` / `getVMMonitoring` API 호출
-3. 백엔드:
-   - `domains/proxmox/router.py` 모니터링 엔드포인트가 요청 처리
-   - `ProxmoxService` 가 Proxmox API 를 호출해 상태/지표 수집
-4. 프론트엔드: 받은 JSON 데이터를 기반으로 그래프/카드 UI 렌더링
-
-이 플로우는 **실시간 인프라 상태 파악**에 초점을 두며, 배포/LLM 기능과 함께 전체 시스템의 운영 가시성을 제공합니다.
-
+- 노드 수가 늘어날수록 `/api/monitoring/nodes` 응답 시간
+- storage metric 집계 비용
+- 프론트 30초 폴링이 충분한지
+- 개별 노드/VM 상세 뷰 추가 필요성

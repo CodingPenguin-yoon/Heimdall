@@ -1,0 +1,334 @@
+---
+# Ansible Playbook
+#
+# 이 Playbook은 Terraform으로 생성된 인프라에 대한 추가 설정을 수행합니다.
+# 프론트엔드에서 선택한 패키지와 역할을 설치합니다.
+#
+# 실행 방법:
+#   ansible-playbook -i inventory.yml playbook.yml -e '{"packages_to_install": ["curl", "git"], "roles_to_apply": ["docker"]}'
+
+- name: Infrastructure Configuration Playbook
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars:
+    # extra_vars로 전달된 변수를 로컬 변수로 매핑 (순환 참조 방지)
+    pkg_list: "{{ packages_to_install | default([]) }}"
+    role_list: "{{ roles_to_apply | default([]) }}"
+
+  tasks:
+    - name: Display host information
+      debug:
+        msg: "Configuring host {{ inventory_hostname }}"
+
+    # 패키지 캐시 업데이트
+    - name: Update package cache (Debian/Ubuntu)
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+      when: ansible_os_family == "Debian"
+
+    - name: Update package cache (RedHat/CentOS)
+      yum:
+        update_cache: yes
+      when: ansible_os_family == "RedHat"
+
+    # 선택한 패키지 설치
+    - name: Install selected packages
+      package:
+        name: "{{ pkg_list }}"
+        state: present
+      when: pkg_list | length > 0
+
+    # 특수 패키지 처리 (Docker, Node.js 등)
+    - name: Install Docker (Debian/Ubuntu)
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+      when:
+        - ansible_os_family == "Debian"
+        - "'docker' in pkg_list or 'docker-compose' in pkg_list"
+
+    - name: Install Docker (RedHat/CentOS)
+      yum:
+        name:
+          - docker
+          - docker-compose
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - "'docker' in pkg_list or 'docker-compose' in pkg_list"
+
+    - name: Start and enable Docker service
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      when: "'docker' in pkg_list or 'docker-compose' in pkg_list"
+
+    # Node.js 설치 (특수 처리)
+    - name: Install Node.js via NodeSource (Debian/Ubuntu)
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+      when:
+        - ansible_os_family == "Debian"
+        - "'nodejs' in pkg_list"
+
+    # Nginx 설치 및 설정
+    - name: Install and configure Nginx
+      block:
+        - name: Install Nginx
+          package:
+            name: nginx
+            state: present
+
+        - name: Start and enable Nginx
+          systemd:
+            name: nginx
+            state: started
+            enabled: yes
+      when: "'nginx' in pkg_list"
+
+    # PostgreSQL 설치
+    - name: Install PostgreSQL (Debian/Ubuntu)
+      apt:
+        name: postgresql
+        state: present
+      when:
+        - ansible_os_family == "Debian"
+        - "'postgresql' in pkg_list"
+
+    # Redis 설치
+    - name: Install Redis
+      package:
+        name: redis-server
+        state: present
+      when: "'redis' in pkg_list"
+
+    # Certbot 설치
+    - name: Install Certbot
+      package:
+        name: certbot
+        state: present
+      when: "'certbot' in pkg_list"
+
+    # Fail2ban 설치 및 설정
+    - name: Install and configure Fail2ban
+      block:
+        - name: Install Fail2ban
+          package:
+            name: fail2ban
+            state: present
+
+        - name: Start and enable Fail2ban
+          systemd:
+            name: fail2ban
+            state: started
+            enabled: yes
+      when: "'fail2ban' in pkg_list"
+
+    # Ansible 역할 적용 (역할이 정의되어 있는 경우)
+    - name: Apply Ansible roles
+      debug:
+        msg: "Roles to apply: {{ role_list }}"
+      when: role_list | length > 0
+
+    # 역할별 작업 (향후 확장 가능)
+    - name: Base role setup
+      block:
+        - name: Install base operational packages
+          package:
+            name:
+              - ca-certificates
+              - curl
+              - wget
+              - git
+              - vim
+              - htop
+              - jq
+              - net-tools
+              - rsync
+              - unzip
+              - zip
+              - python3-pip
+              - python3-venv
+            state: present
+      when: "'base' in role_list"
+
+    - name: Docker role setup
+      block:
+        - name: Ensure Docker is installed
+          package:
+            name: docker.io
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Start Docker service
+          systemd:
+            name: docker
+            state: started
+            enabled: yes
+      when: "'docker' in role_list"
+
+    - name: Python runtime role setup
+      block:
+        - name: Install Python runtime packages
+          package:
+            name:
+              - python3
+              - python3-pip
+              - python3-venv
+            state: present
+      when: "'python' in role_list"
+
+    - name: Node.js role setup (Debian/Ubuntu)
+      shell: |
+        curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+        apt-get install -y nodejs
+      args:
+        executable: /bin/bash
+      when:
+        - ansible_os_family == "Debian"
+        - "'nodejs' in role_list"
+
+    - name: Node.js role setup (RedHat/CentOS)
+      yum:
+        name:
+          - nodejs
+          - npm
+        state: present
+      when:
+        - ansible_os_family == "RedHat"
+        - "'nodejs' in role_list"
+
+    - name: Nginx role setup
+      block:
+        - name: Install Nginx
+          package:
+            name: nginx
+            state: present
+
+        - name: Start and enable Nginx
+          systemd:
+            name: nginx
+            state: started
+            enabled: yes
+      when: "'nginx' in role_list"
+
+    - name: PostgreSQL role setup
+      block:
+        - name: Install PostgreSQL
+          package:
+            name: postgresql
+            state: present
+
+        - name: Start and enable PostgreSQL service
+          systemd:
+            name: postgresql
+            state: started
+            enabled: yes
+      when: "'postgresql' in role_list"
+
+    - name: MySQL role setup
+      block:
+        - name: Install MySQL server (Debian/Ubuntu)
+          package:
+            name: mysql-server
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install MySQL server (RedHat/CentOS)
+          package:
+            name: mariadb-server
+            state: present
+          when: ansible_os_family == "RedHat"
+
+        - name: Start and enable MySQL service (Debian/Ubuntu)
+          systemd:
+            name: mysql
+            state: started
+            enabled: yes
+          when: ansible_os_family == "Debian"
+
+        - name: Start and enable MySQL service (RedHat/CentOS)
+          systemd:
+            name: mysqld
+            state: started
+            enabled: yes
+          when: ansible_os_family == "RedHat"
+      when: "'mysql' in role_list"
+
+    - name: Redis role setup
+      block:
+        - name: Install Redis server
+          package:
+            name: redis-server
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install Redis server (RedHat/CentOS)
+          package:
+            name: redis
+            state: present
+          when: ansible_os_family == "RedHat"
+
+        - name: Start and enable Redis service (Debian/Ubuntu)
+          systemd:
+            name: redis-server
+            state: started
+            enabled: yes
+          when: ansible_os_family == "Debian"
+
+        - name: Start and enable Redis service (RedHat/CentOS)
+          systemd:
+            name: redis
+            state: started
+            enabled: yes
+          when: ansible_os_family == "RedHat"
+      when: "'redis' in role_list"
+
+    - name: NFS client role setup
+      block:
+        - name: Install NFS client utilities (Debian/Ubuntu)
+          package:
+            name: nfs-common
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install NFS client utilities (RedHat/CentOS)
+          package:
+            name: nfs-utils
+            state: present
+          when: ansible_os_family == "RedHat"
+      when: "'nfs' in role_list"
+
+    - name: SSL/TLS setup role
+      block:
+        - name: Install Certbot
+          package:
+            name: certbot
+            state: present
+      when: "'ssl' in role_list"
+
+    - name: Firewall configuration role
+      block:
+        - name: Install UFW (Debian/Ubuntu)
+          apt:
+            name: ufw
+            state: present
+          when: ansible_os_family == "Debian"
+
+        - name: Install firewalld (RedHat/CentOS)
+          yum:
+            name: firewalld
+            state: present
+          when: ansible_os_family == "RedHat"
+      when: "'firewall' in role_list"
+
+    - name: Playbook execution completed
+      debug:
+        msg: "Playbook execution completed successfully. Installed packages: {{ pkg_list }}, Applied roles: {{ role_list }}"

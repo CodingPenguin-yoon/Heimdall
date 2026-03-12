@@ -2,13 +2,15 @@ import axios from 'axios'
 
 // API 기본 URL 설정 (프록시를 통해 /api로 요청)
 const API_BASE_URL = '/api'
+const parsedTimeout = Number(import.meta.env.VITE_API_TIMEOUT_MS || 120000)
+const API_TIMEOUT_MS = Number.isFinite(parsedTimeout) && parsedTimeout > 0 ? parsedTimeout : 120000
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000, // 30초 타임아웃
+  timeout: API_TIMEOUT_MS,
 })
 
 // 요청 인터셉터: API 호출 URL 로깅
@@ -59,6 +61,8 @@ export const deployInfrastructure = async (config) => {
           disk_size_gb: config.disk_size_gb || 50,
           ansible_packages: config.ansible_packages || [],
           ansible_roles: config.ansible_roles || [],
+          vm_ip: config.vm_ip,
+          vm_gateway: config.vm_gateway,
         }
       : {
           server_id: config.selectedServerId,
@@ -80,15 +84,23 @@ export const deployInfrastructure = async (config) => {
   }
 }
 
-// 자원 회수 API
-export const destroyInfrastructure = async (serverName) => {
+// 인스턴스 종료 후 삭제 API
+export const terminateInstance = async ({
+  node,
+  vmid,
+  shutdown_timeout_seconds = 60,
+  force_stop_timeout_seconds = 30,
+}) => {
   try {
-    const response = await apiClient.post('/destroy', {
-      server_name: serverName,
+    const response = await apiClient.post('/instances/terminate', {
+      node,
+      vmid,
+      shutdown_timeout_seconds,
+      force_stop_timeout_seconds,
     })
     return response
   } catch (error) {
-    console.error('Destroy API error:', error)
+    console.error('Terminate instance API error:', error)
     throw error
   }
 }
@@ -111,6 +123,73 @@ export const getLogs = async (taskId) => {
     return response
   } catch (error) {
     console.error('Logs API error:', error)
+    throw error
+  }
+}
+
+// 작업 목록 조회 API (최신순)
+// 사용 예:
+// - getTasks(200)
+// - getTasks({ limit: 300, status: 'running,success', q: 'vm-104', include_archived: true })
+export const getTasks = async (limitOrOptions = 100) => {
+  try {
+    let options = {}
+    if (typeof limitOrOptions === 'number') {
+      options.limit = limitOrOptions
+    } else if (limitOrOptions && typeof limitOrOptions === 'object') {
+      options = { ...limitOrOptions }
+    }
+
+    const response = await apiClient.get('/tasks', {
+      params: {
+        limit: options.limit ?? 100,
+        status: options.status,
+        q: options.q,
+        date_from: options.date_from,
+        date_to: options.date_to,
+        include_archived: options.include_archived ?? false,
+      },
+    })
+    return response
+  } catch (error) {
+    console.error('Get tasks API error:', error)
+    throw error
+  }
+}
+
+// 작업 이벤트 스트림(SSE)
+export const createTaskEventStream = ({
+  includeArchived = true,
+  lastEventId = null,
+} = {}) => {
+  const params = new URLSearchParams()
+  params.set('include_archived', includeArchived ? 'true' : 'false')
+  if (lastEventId !== null && lastEventId !== undefined) {
+    params.set('last_event_id', String(lastEventId))
+  }
+  return new EventSource(`/api/tasks/stream?${params.toString()}`)
+}
+
+// 작업 상세 조회 API
+export const getTaskDetail = async (taskId) => {
+  try {
+    const response = await apiClient.get(`/tasks/${taskId}`)
+    return response
+  } catch (error) {
+    console.error('Get task detail API error:', error)
+    throw error
+  }
+}
+
+// 작업 아카이브 토글 API
+export const archiveTask = async (taskId, archived = true) => {
+  try {
+    const response = await apiClient.post(`/tasks/${taskId}/archive`, {
+      archived,
+    })
+    return response
+  } catch (error) {
+    console.error('Archive task API error:', error)
     throw error
   }
 }
@@ -177,17 +256,6 @@ export const getVMs = async () => {
     return response
   } catch (error) {
     console.error('Get VMs API error:', error)
-    throw error
-  }
-}
-
-// 서버의 ISO 이미지 목록 조회 API
-export const getServerISOImages = async (serverId) => {
-  try {
-    const response = await apiClient.get(`/servers/${serverId}/iso-images`)
-    return response
-  } catch (error) {
-    console.error('Get server ISO images API error:', error)
     throw error
   }
 }
@@ -274,6 +342,50 @@ export const clearLlmSession = async (sessionId) => {
     return response
   } catch (error) {
     console.error('Clear LLM Session API error:', error)
+    throw error
+  }
+}
+
+// IP 풀 설정 조회 API
+export const getIpPoolConfig = async () => {
+  try {
+    const response = await apiClient.get('/network/ip-pool/config')
+    return response
+  } catch (error) {
+    console.error('Get IP Pool Config API error:', error)
+    throw error
+  }
+}
+
+// 사용 가능한 IP 목록 조회 API
+export const getAvailableIps = async (limit = 10) => {
+  try {
+    const response = await apiClient.get(`/network/ip-pool/available?limit=${limit}`)
+    return response
+  } catch (error) {
+    console.error('Get Available IPs API error:', error)
+    throw error
+  }
+}
+
+// 다음 사용 가능한 IP 조회 API
+export const getNextAvailableIp = async () => {
+  try {
+    const response = await apiClient.get('/network/ip-pool/next')
+    return response
+  } catch (error) {
+    console.error('Get Next Available IP API error:', error)
+    throw error
+  }
+}
+
+// 특정 IP 사용 가능 여부 확인 API
+export const checkIpAvailability = async (ip) => {
+  try {
+    const response = await apiClient.get(`/network/ip-pool/check/${ip}`)
+    return response
+  } catch (error) {
+    console.error('Check IP Availability API error:', error)
     throw error
   }
 }

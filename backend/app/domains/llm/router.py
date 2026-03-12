@@ -113,7 +113,7 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
         # - data 필드에 JSON(raw_result)로 포함시킨다.
         #
         # VM 생성 질의응답(슬롯 채우기)을 위해 추가된 보조 액션들도
-        # 여기서 자동 실행하여 템플릿/ISO/스토리지/네트워크 옵션을
+        # 여기서 자동 실행하여 템플릿/스토리지/네트워크 옵션을
         # LLM 응답과 함께 프론트로 전달한다.
         # ------------------------------------------------------------------
         SAFE_AUTO_ACTION_TYPES = {
@@ -121,7 +121,6 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
             "list_nodes",
             "get_vm_detail",
             "list_templates",
-            "list_iso_images",
             "list_storages",
             "list_networks",
         }
@@ -205,6 +204,7 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
         )
 
 
+@router.get("/llm/session/{session_id}/messages")
 @router.post("/llm/session/{session_id}/messages")
 async def get_session_messages(session_id: str) -> Dict[str, Any]:
     """
@@ -212,6 +212,7 @@ async def get_session_messages(session_id: str) -> Dict[str, Any]:
 
     - Redis에 저장된 대화 이력을 조회하여 반환합니다.
     - 프론트엔드에서 페이지 새로고침 후 대화 이력을 복원할 때 사용합니다.
+    - 기존 POST 호출도 유지하지만, 프론트엔드 구현과 맞추기 위해 GET도 함께 지원합니다.
     """
     try:
         messages = chat_session_service.get_messages(session_id)
@@ -297,4 +298,3 @@ async def execute_llm_action(
 
 
 __all__ = ["router"]
-

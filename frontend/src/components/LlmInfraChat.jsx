@@ -2,6 +2,15 @@ import { useState, useEffect, useRef } from 'react'
 import { Send, Sparkles, Terminal, Play, RotateCcw } from 'lucide-react'
 import { llmChat, executeLlmAction, getLlmSessionMessages, clearLlmSession } from '../services/api'
 
+const AUTO_EXECUTED_ACTION_TYPES = new Set([
+  'list_vms',
+  'list_nodes',
+  'get_vm_detail',
+  'list_templates',
+  'list_storages',
+  'list_networks',
+])
+
 /**
  * LLM 기반 인프라 채팅 컴포넌트
  *
@@ -125,7 +134,7 @@ function LlmInfraChat() {
 
       // 읽기 전용(조회) 액션은 이미 백엔드에서 자동 실행되므로
       // 프론트에서는 수동 실행이 필요한 액션만 목록에 표시
-      setPendingActions(actions.filter((a) => !['list_vms', 'list_nodes', 'get_vm_detail'].includes(a.type)))
+      setPendingActions(actions.filter((a) => !AUTO_EXECUTED_ACTION_TYPES.has(a.type)))
       setSelectedActionIndex(null)
     } catch (error) {
       const errorMessage = error.response?.data?.detail || error.message || 'LLM 호출 중 오류가 발생했습니다.'
@@ -240,8 +249,6 @@ function LlmInfraChat() {
 
             const hasTemplates =
               !!msg.data?.templates && Array.isArray(msg.data.templates) && msg.data.templates.length > 0
-            const hasIsoImages =
-              !!msg.data?.iso_images && Array.isArray(msg.data.iso_images) && msg.data.iso_images.length > 0
             const hasStorages =
               !!msg.data?.storages && Array.isArray(msg.data.storages) && msg.data.storages.length > 0
             const hasNetworks =
@@ -280,15 +287,10 @@ function LlmInfraChat() {
                     </div>
                   )}
 
-                  {/* VM 생성 질의응답용 옵션 리스트들 (템플릿 / ISO / 스토리지 / 네트워크) */}
+                  {/* VM 생성 질의응답용 옵션 리스트들 (템플릿 / 스토리지 / 네트워크) */}
                   {hasTemplates && (
                     <div className="mt-3">
                       <TemplateListPreview templates={msg.data.templates} />
-                    </div>
-                  )}
-                  {hasIsoImages && (
-                    <div className="mt-3">
-                      <IsoImageListPreview isoImages={msg.data.iso_images} />
                     </div>
                   )}
                   {hasStorages && (
@@ -675,7 +677,7 @@ function StatusPill({ status }) {
 
 // ---------------------------------------------------------------------------
 // VM 생성 질의응답용 옵션 리스트 프리뷰 컴포넌트들
-// - 템플릿 / ISO 이미지 / 스토리지 / 네트워크 후보를 간단히 표 형태로 보여줌
+// - 템플릿 / 스토리지 / 네트워크 후보를 간단히 표 형태로 보여줌
 // ---------------------------------------------------------------------------
 
 function TemplateListPreview({ templates }) {
@@ -762,53 +764,6 @@ function TemplateListPreview({ templates }) {
 
       <p className="text-[11px] text-gray-500">
         위 목록에서 원하는 템플릿의 <span className="font-semibold">template_id</span>를 골라서 말씀해 주세요.
-      </p>
-    </div>
-  )
-}
-
-function IsoImageListPreview({ isoImages }) {
-  const items = Array.isArray(isoImages) ? isoImages : []
-  if (items.length === 0) return null
-
-  return (
-    <div className="bg-white/70 border border-indigo-200 rounded-lg px-3 py-2 text-xs text-gray-800 space-y-2">
-      <div className="font-semibold text-gray-900 flex items-center justify-between">
-        <span>ISO 이미지 목록</span>
-        <span className="text-[11px] text-gray-500">{items.length}개 ISO</span>
-      </div>
-      <div className="overflow-x-auto">
-        <table className="min-w-full text-[11px] border-collapse">
-          <thead>
-            <tr className="border-b border-gray-100 bg-white">
-              <th className="py-1.5 pr-3 text-left font-semibold text-gray-700 text-[11px]">이름</th>
-              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
-                ID
-              </th>
-              <th className="py-1.5 px-3 text-left font-semibold text-gray-700 text-[11px] whitespace-nowrap">
-                스토리지 / 크기
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            {items.map((iso, idx) => (
-              <tr key={iso.iso_id || iso.id || idx} className="border-t border-gray-100 hover:bg-gray-50/70">
-                <td className="py-1.5 pr-3 align-middle">
-                  <div className="font-medium text-[12px] text-gray-900">{iso.iso_name || iso.name || '이름 없음'}</div>
-                </td>
-                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
-                  {iso.iso_id || iso.id || '-'}
-                </td>
-                <td className="py-1.5 px-3 align-middle whitespace-nowrap text-gray-700">
-                  {iso.storage || '-'} · {iso.size_gb ?? '-'}GB
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <p className="text-[11px] text-gray-500">
-        위 목록에서 사용할 ISO의 <span className="font-semibold">iso_id</span> 또는 이름을 골라서 말씀해 주세요.
       </p>
     </div>
   )

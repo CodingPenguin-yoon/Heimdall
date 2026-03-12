@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Server, Cpu, Network, ChevronRight, CheckCircle2, Loader2, HardDrive, Package } from 'lucide-react'
-import { getServers, getTemplates, getServerStorage, getServerNetworks, getServerISOImages } from '../services/api'
+import { Server, Cpu, Network, ChevronRight, CheckCircle2, Loader2, HardDrive, Package, XCircle, Search } from 'lucide-react'
+import { getServers, getTemplates, getServerStorage, getServerNetworks, checkIpAvailability } from '../services/api'
 
 const STEPS = [
   { id: 1, name: 'Server & Template', icon: Server },
@@ -9,15 +9,68 @@ const STEPS = [
   { id: 4, name: 'Ansible Setup', icon: Package },
 ]
 
-function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
+const naturalCollator = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'base',
+})
+
+function naturalCompare(left, right) {
+  return naturalCollator.compare(String(left ?? ''), String(right ?? ''))
+}
+
+function sortServersAscending(list) {
+  const items = Array.isArray(list) ? [...list] : []
+  return items.sort((a, b) => {
+    const aKey = a?.id || a?.server_id || a?.name || a?.server_name || ''
+    const bKey = b?.id || b?.server_id || b?.name || b?.server_name || ''
+    return naturalCompare(aKey, bKey)
+  })
+}
+
+function parseTemplateIndex(template) {
+  const rawVmid = template?.vmid
+  if (rawVmid !== undefined && rawVmid !== null && rawVmid !== '') {
+    const parsed = Number(rawVmid)
+    if (Number.isFinite(parsed)) {
+      return parsed
+    }
+  }
+
+  const templateId = String(template?.id || template?.template_id || '')
+  const parts = templateId.split('/')
+  const maybeVmid = parts.length > 1 ? parts[1] : parts[0]
+  const parsed = Number(maybeVmid)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function sortTemplatesAscending(list) {
+  const items = Array.isArray(list) ? [...list] : []
+  return items.sort((a, b) => {
+    const aIndex = parseTemplateIndex(a)
+    const bIndex = parseTemplateIndex(b)
+    if (aIndex !== null && bIndex !== null && aIndex !== bIndex) {
+      return aIndex - bIndex
+    }
+    if (aIndex !== null && bIndex === null) {
+      return -1
+    }
+    if (aIndex === null && bIndex !== null) {
+      return 1
+    }
+
+    const aName = a?.name || a?.template_name || ''
+    const bName = b?.name || b?.template_name || ''
+    return naturalCompare(aName, bName)
+  })
+}
+
+function CreateInstanceWizard({ config, onConfigChange, onDeploy, isDeploying = false }) {
   const [currentStep, setCurrentStep] = useState(1)
   const [servers, setServers] = useState([])
   const [templates, setTemplates] = useState([])
-  const [isoImages, setIsoImages] = useState([])
   const [storages, setStorages] = useState([])
   const [networks, setNetworks] = useState([])
   const [loading, setLoading] = useState(false)
-  const [vmCreationMethod, setVmCreationMethod] = useState('template') // 'template' or 'iso'
 
   // 서버 목록 로드
   useEffect(() => {
@@ -25,7 +78,8 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
       try {
         setLoading(true)
         const response = await getServers()
-        setServers(response.data?.servers || response.data || [])
+        const fetchedServers = response.data?.servers || response.data || []
+        setServers(sortServersAscending(fetchedServers))
       } catch (error) {
         console.error('Failed to fetch servers:', error)
         setServers([])
@@ -41,7 +95,8 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     const fetchTemplates = async () => {
       try {
         const response = await getTemplates()
-        setTemplates(response.data?.templates || response.data || [])
+        const fetchedTemplates = response.data?.templates || response.data || []
+        setTemplates(sortTemplatesAscending(fetchedTemplates))
       } catch (error) {
         console.error('Failed to fetch templates:', error)
         setTemplates([])
@@ -50,25 +105,6 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     fetchTemplates()
   }, [])
 
-  // ISO 이미지 목록 로드 (서버 선택 시)
-  useEffect(() => {
-    if (config.selectedServerId && vmCreationMethod === 'iso') {
-      const fetchISOImages = async () => {
-        try {
-          setLoading(true)
-          const response = await getServerISOImages(config.selectedServerId)
-          setIsoImages(response.data?.iso_images || response.data || [])
-        } catch (error) {
-          console.error('Failed to fetch ISO images:', error)
-          setIsoImages([])
-        } finally {
-          setLoading(false)
-        }
-      }
-      fetchISOImages()
-    }
-  }, [config.selectedServerId, vmCreationMethod])
-
   // 서버 선택 시 스토리지 로드
   useEffect(() => {
     if (config.selectedServerId) {
@@ -76,7 +112,13 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
         try {
           setLoading(true)
           const response = await getServerStorage(config.selectedServerId)
-          setStorages(response.data?.storages || response.data || [])
+          const fetchedStorages = response.data?.storages || response.data || []
+          const sortedStorages = [...fetchedStorages].sort((a, b) => {
+            const aName = a?.name || a?.storage_name || a?.id || a?.storage_id || ''
+            const bName = b?.name || b?.storage_name || b?.id || b?.storage_id || ''
+            return naturalCompare(aName, bName)
+          })
+          setStorages(sortedStorages)
         } catch (error) {
           console.error('Failed to fetch storage:', error)
           setStorages([])
@@ -95,7 +137,13 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
         try {
           setLoading(true)
           const response = await getServerNetworks(config.selectedServerId)
-          setNetworks(response.data?.networks || response.data || [])
+          const fetchedNetworks = response.data?.networks || response.data || []
+          const sortedNetworks = [...fetchedNetworks].sort((a, b) => {
+            const aName = a?.name || a?.network_name || a?.id || a?.network_id || ''
+            const bName = b?.name || b?.network_name || b?.id || b?.network_id || ''
+            return naturalCompare(aName, bName)
+          })
+          setNetworks(sortedNetworks)
         } catch (error) {
           console.error('Failed to fetch networks:', error)
           setNetworks([])
@@ -121,8 +169,6 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   
   const handleServerSelect = (serverId) => {
     console.log('[DEBUG] handleServerSelect called with serverId:', serverId)
-    // 서버를 새로 선택하면 생성 방식은 기본적으로 템플릿 기준으로 리셋
-    setVmCreationMethod('template')
     onConfigChange((prev) => {
       const newConfig = {
         ...prev,
@@ -142,24 +188,6 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     onConfigChange((prev) => ({
       ...prev,
       selectedTemplateId: templateId,
-      selectedISOImageId: '', // 템플릿 선택 시 ISO 초기화
-    }))
-  }
-
-  const handleISOSelect = (isoId) => {
-    onConfigChange((prev) => ({
-      ...prev,
-      selectedISOImageId: isoId,
-      selectedTemplateId: '', // ISO 선택 시 템플릿 초기화
-    }))
-  }
-
-  const handleCreationMethodChange = (method) => {
-    setVmCreationMethod(method)
-    onConfigChange((prev) => ({
-      ...prev,
-      selectedTemplateId: '',
-      selectedISOImageId: '',
     }))
   }
 
@@ -194,18 +222,18 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
     let result = false
     switch (currentStep) {
       case 1:
-        // 임시로 OS 소스(템플릿/ISO)가 없어도 서버만 선택되면 다음 스텝으로 진행 가능하게 완화
-        result = !!config.selectedServerId
+        result = !!config.selectedServerId && !!config.selectedTemplateId
         console.log('[DEBUG] canProceed step 1 - selectedServerId:', config.selectedServerId, 'result:', result)
         return result
       case 2:
-        result = (
-          (config.cpuCores && config.memory && config.selectedStorageId) ||
-          (config.selectedTemplateId && config.selectedStorageId)
-        )
+        result = !!config.selectedTemplateId && !!config.selectedStorageId
         return result
       case 3:
-        return config.selectedNetworkIds?.length > 0
+        // DHCP면 IP 입력 불필요, Static이면 IP/Gateway + 체크 완료 필수
+        const ipOk = config.ipMode === 'static'
+          ? (config.vmIp && config.vmGateway && config.ipChecked === 'available')
+          : true
+        return config.selectedNetworkIds?.length > 0 && ipOk
       case 4:
         // Step 4는 선택 사항이므로 항상 진행 가능
         return true
@@ -221,16 +249,11 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
           <ServerSelectionStep
             servers={servers}
             templates={templates}
-            isoImages={isoImages}
             selectedServerId={config.selectedServerId}
             selectedTemplateId={config.selectedTemplateId}
-            selectedISOImageId={config.selectedISOImageId}
             serverName={config.serverName || ''}
-            vmCreationMethod={vmCreationMethod}
             onServerSelect={handleServerSelect}
             onTemplateSelect={handleTemplateSelect}
-            onISOSelect={handleISOSelect}
-            onCreationMethodChange={handleCreationMethodChange}
             onNameChange={(name) =>
               onConfigChange((prev) => ({ ...prev, serverName: name }))
             }
@@ -257,6 +280,14 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
             networks={networks}
             selectedNetworkIds={config.selectedNetworkIds || []}
             onToggle={handleNetworkToggle}
+            ipMode={config.ipMode || 'dhcp'}
+            onIpModeChange={(mode) => onConfigChange((prev) => ({ ...prev, ipMode: mode, ipChecked: null }))}
+            vmIp={config.vmIp || ''}
+            vmGateway={config.vmGateway || ''}
+            onIpChange={(ip) => onConfigChange((prev) => ({ ...prev, vmIp: ip, ipChecked: null }))}
+            onGatewayChange={(gw) => onConfigChange((prev) => ({ ...prev, vmGateway: gw }))}
+            ipChecked={config.ipChecked}
+            onIpChecked={(status) => onConfigChange((prev) => ({ ...prev, ipChecked: status }))}
             loading={loading}
           />
         )
@@ -404,10 +435,17 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
             <button
               type="button"
               onClick={onDeploy}
-              disabled={!canProceed()}
+              disabled={!canProceed() || isDeploying}
               className="px-6 py-2.5 text-sm font-medium text-white bg-green-600 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors flex items-center gap-2"
             >
-              Launch Instance
+              {isDeploying ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Launching...
+                </>
+              ) : (
+                'Launch Instance'
+              )}
             </button>
           )}
         </div>
@@ -416,70 +454,24 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy }) {
   )
 }
 
-// Step 1: Server Selection + Template/ISO Selection
+// Step 1: Server Selection + Template Selection
 function ServerSelectionStep({
   servers,
   templates,
-  isoImages,
   selectedServerId,
   selectedTemplateId,
-  selectedISOImageId,
   serverName,
-  vmCreationMethod,
   onServerSelect,
   onTemplateSelect,
-  onISOSelect,
-  onCreationMethodChange,
   onNameChange,
   loading,
 }) {
   return (
     <div className="w-full max-w-full min-w-0">
-      <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Select Server & OS Source</h3>
+      <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Select Server & Template</h3>
       <p className="text-xs md:text-sm text-gray-500 mb-2 md:mb-3">
-        Choose a server and select template or ISO image
+        Choose a server and select the template to clone
       </p>
-
-      {/* VM Creation Method Selection */}
-      {selectedServerId && (
-        <div className="mb-2 md:mb-3">
-          <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
-            VM Creation Method
-          </h4>
-          <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0">
-            <div className="grid grid-cols-2 gap-2 md:gap-3">
-              <button
-                type="button"
-                onClick={() => onCreationMethodChange('template')}
-                className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
-                  vmCreationMethod === 'template'
-                    ? 'border-blue-600 bg-blue-50 shadow-sm'
-                    : 'border-gray-200 bg-white hover:border-blue-300'
-                }`}
-              >
-                <div className="font-semibold text-xs md:text-sm text-gray-900">Template</div>
-                <div className="text-[10px] md:text-xs text-gray-600 mt-0.5">
-                  Clone from template
-                </div>
-              </button>
-              <button
-                type="button"
-                onClick={() => onCreationMethodChange('iso')}
-                className={`p-2 md:p-3 border-2 rounded-lg text-center transition-all ${
-                  vmCreationMethod === 'iso'
-                    ? 'border-blue-600 bg-blue-50 shadow-sm'
-                    : 'border-gray-200 bg-white hover:border-blue-300'
-                }`}
-              >
-                <div className="font-semibold text-xs md:text-sm text-gray-900">ISO Image</div>
-                <div className="text-[10px] md:text-xs text-gray-600 mt-0.5">
-                  Install from ISO
-                </div>
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Instance Name Input */}
       <div className="mb-2 md:mb-3">
@@ -562,7 +554,7 @@ function ServerSelectionStep({
       </div>
 
       {/* Template Selection */}
-      {vmCreationMethod === 'template' && selectedServerId && (
+      {selectedServerId && (
         <div className="w-full max-w-full min-w-0">
           <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
             <Server className="w-3.5 h-3.5 md:w-4 md:h-4 text-green-600 shrink-0" />
@@ -602,61 +594,6 @@ function ServerSelectionStep({
                         </div>
                       </div>
                       {selectedTemplateId === (template.id || template.template_id) && (
-                        <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
-                      )}
-                    </div>
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ISO Image Selection */}
-      {vmCreationMethod === 'iso' && selectedServerId && (
-        <div className="w-full max-w-full min-w-0">
-          <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide flex items-center gap-1.5">
-            <HardDrive className="w-3.5 h-3.5 md:w-4 md:h-4 text-purple-600 shrink-0" />
-            ISO Image Selection
-          </h4>
-          <div className="border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full min-w-0 overflow-hidden">
-            {loading ? (
-              <div className="flex items-center justify-center py-6 md:py-8">
-                <Loader2 className="w-5 h-5 md:w-6 md:h-6 text-blue-600 animate-spin" />
-                <span className="ml-2 md:ml-3 text-xs md:text-sm text-gray-600">Loading...</span>
-              </div>
-            ) : isoImages.length === 0 ? (
-              <div className="text-center py-6 md:py-8 text-gray-500 border border-gray-200 rounded-lg bg-white">
-                <HardDrive className="w-6 h-6 md:w-8 md:h-8 mx-auto mb-2 text-gray-400" />
-                <p className="text-xs md:text-sm">No ISO images available</p>
-                <p className="text-[10px] md:text-xs text-gray-400 mt-1">
-                  Upload ISO images to Proxmox storage first
-                </p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 md:gap-3 w-full max-w-full">
-                {isoImages.map((iso) => (
-                  <button
-                    key={iso.id || iso.iso_id}
-                    onClick={() => onISOSelect(iso.id || iso.iso_id)}
-                    className={`p-2 md:p-3 border-2 rounded-lg text-left transition-all hover:shadow-sm w-full max-w-full min-w-0 ${
-                      selectedISOImageId === (iso.id || iso.iso_id)
-                        ? 'border-blue-600 bg-blue-50 shadow-sm'
-                        : 'border-gray-200 bg-white hover:border-blue-300 hover:bg-blue-50/30'
-                    }`}
-                  >
-                    <div className="flex items-start justify-between gap-1.5">
-                      <div className="flex-1 min-w-0 overflow-hidden">
-                        <div className="font-semibold text-xs md:text-sm text-gray-900 mb-0.5 truncate">
-                          {iso.name || iso.iso_name || 'Unnamed ISO'}
-                        </div>
-                        <div className="text-[10px] md:text-xs text-gray-600 space-y-0.5">
-                          {iso.size_gb && <div>Size: {iso.size_gb} GB</div>}
-                          {iso.storage && <div>Storage: {iso.storage}</div>}
-                        </div>
-                      </div>
-                      {selectedISOImageId === (iso.id || iso.iso_id) && (
                         <CheckCircle2 className="w-4 h-4 md:w-5 md:h-5 text-blue-600 shrink-0" />
                       )}
                     </div>
@@ -805,67 +742,219 @@ function SpecStorageSelectionStep({
 }
 
 // Step 3: Network Selection
-function NetworkSelectionStep({ networks, selectedNetworkIds, onToggle, loading }) {
+function NetworkSelectionStep({
+  networks,
+  selectedNetworkIds,
+  onToggle,
+  ipMode,
+  onIpModeChange,
+  vmIp,
+  vmGateway,
+  onIpChange,
+  onGatewayChange,
+  ipChecked,
+  onIpChecked,
+  loading
+}) {
+  const [checkingIp, setCheckingIp] = useState(false)
+
+  const handleCheckIp = async () => {
+    if (!vmIp) return
+
+    setCheckingIp(true)
+    onIpChecked(null)
+
+    try {
+      const ipOnly = vmIp.split('/')[0]
+      const response = await checkIpAvailability(ipOnly)
+
+      if (response.data?.in_use) {
+        onIpChecked('in_use')
+      } else {
+        onIpChecked('available')
+      }
+    } catch (error) {
+      onIpChecked('error')
+    } finally {
+      setCheckingIp(false)
+    }
+  }
+
+  // IP 입력 변경 시 상태 초기화 (onIpChange에서 이미 처리됨)
+  const handleIpInputChange = (value) => {
+    onIpChange(value)
+  }
+
   return (
     <div className="w-full max-w-full min-w-0">
       <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Configure Network</h3>
       <p className="text-xs md:text-sm text-gray-500 mb-2 md:mb-3">
-        Select one or more networks for your instance
+        Configure IP settings and select network bridge
       </p>
 
-      {loading ? (
-        <div className="flex items-center justify-center py-12">
-          <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
-          <span className="ml-3 text-gray-600">Loading networks...</span>
-        </div>
-      ) : networks.length === 0 ? (
-        <div className="text-center py-12 text-gray-500 border border-gray-200 rounded-lg">
-          <Network className="w-12 h-12 mx-auto mb-4 text-gray-400" />
-          <p>No networks available</p>
-          <p className="text-xs mt-1">Please select a server first</p>
-        </div>
-      ) : (
-        <div className="space-y-1.5 md:space-y-2 w-full max-w-full">
-          {networks.map((network) => {
-            const isSelected = selectedNetworkIds.includes(
-              network.id || network.network_id
-            )
-            return (
-              <button
-                key={network.id || network.network_id}
-                onClick={() => onToggle(network.id || network.network_id)}
-                className={`w-full max-w-full p-2 md:p-3 border-2 rounded-lg text-left transition-all ${
-                  isSelected
-                    ? 'border-blue-600 bg-blue-50'
-                    : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1.5">
-                  <div className="flex-1 min-w-0 overflow-hidden">
-                    <div className="font-semibold text-xs md:text-sm text-gray-900 truncate">
-                      {network.name || network.network_name || 'Unnamed Network'}
-                    </div>
-                    <div className="text-[10px] md:text-xs text-gray-600 mt-0.5 space-y-0.5">
-                      {network.type && <div>Type: {network.type}</div>}
-                      {network.cidr && <div>CIDR: {network.cidr}</div>}
-                      {network.description && (
-                        <div className="text-gray-500 line-clamp-1">{network.description}</div>
+      {/* IP Mode Selection */}
+      <div className="mb-3 md:mb-4">
+        <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
+          IP Configuration
+        </h4>
+        <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+          {/* DHCP / Static Toggle */}
+          <div className="flex gap-2 mb-3">
+            <button
+              type="button"
+              onClick={() => onIpModeChange('dhcp')}
+              className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${
+                ipMode === 'dhcp'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              DHCP (Auto)
+            </button>
+            <button
+              type="button"
+              onClick={() => onIpModeChange('static')}
+              className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition-all ${
+                ipMode === 'static'
+                  ? 'bg-blue-600 text-white shadow-sm'
+                  : 'bg-white border border-gray-300 text-gray-700 hover:bg-gray-50'
+              }`}
+            >
+              Static IP
+            </button>
+          </div>
+
+          {/* Static IP Inputs */}
+          {ipMode === 'static' ? (
+            <div className="space-y-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="min-w-0">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    IP Address <span className="text-red-500">*</span>
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      value={vmIp}
+                      onChange={(e) => handleIpInputChange(e.target.value)}
+                      placeholder="192.168.2.100/24"
+                      className="flex-1 px-3 py-2 bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900 placeholder-gray-400"
+                    />
+                    <button
+                      type="button"
+                      onClick={handleCheckIp}
+                      disabled={!vmIp || checkingIp}
+                      className="px-3 py-2 bg-gray-100 border border-gray-300 rounded-md hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                      title="Check availability"
+                    >
+                      {checkingIp ? (
+                        <Loader2 className="w-4 h-4 animate-spin text-gray-600" />
+                      ) : (
+                        <Search className="w-4 h-4 text-gray-600" />
                       )}
+                    </button>
+                  </div>
+                  {/* IP Status */}
+                  {ipChecked && (
+                    <div className={`mt-1 flex items-center gap-1 text-xs ${
+                      ipChecked === 'available' ? 'text-green-600' :
+                      ipChecked === 'in_use' ? 'text-red-600' : 'text-amber-600'
+                    }`}>
+                      {ipChecked === 'available' && <><CheckCircle2 className="w-3 h-3" /> Available</>}
+                      {ipChecked === 'in_use' && <><XCircle className="w-3 h-3" /> Already in use</>}
+                      {ipChecked === 'error' && <><XCircle className="w-3 h-3" /> Check failed</>}
+                    </div>
+                  )}
+                  {ipMode === 'static' && !ipChecked && vmIp && (
+                    <p className="mt-1 text-[10px] text-amber-600">
+                      Click check button to verify
+                    </p>
+                  )}
+                </div>
+                <div className="min-w-0">
+                  <label className="block text-xs font-medium text-gray-700 mb-1">
+                    Gateway <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={vmGateway}
+                    onChange={(e) => onGatewayChange(e.target.value)}
+                    placeholder="192.168.2.1"
+                    className="w-full px-3 py-2 bg-white border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 text-sm text-gray-900 placeholder-gray-400"
+                  />
+                </div>
+              </div>
+              <p className="text-[10px] text-gray-500">
+                Use CIDR format for IP (e.g., 192.168.2.100/24)
+              </p>
+            </div>
+          ) : (
+            <div className="p-3 bg-blue-50 border border-blue-200 rounded-md">
+              <p className="text-xs text-blue-700">
+                IP will be automatically assigned by DHCP server
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Network Bridge Selection */}
+      <div>
+        <h4 className="text-xs md:text-sm font-semibold text-gray-700 mb-1.5 uppercase tracking-wide">
+          Network Bridge
+        </h4>
+        {loading ? (
+          <div className="flex items-center justify-center py-8">
+            <Loader2 className="w-6 h-6 text-blue-600 animate-spin" />
+            <span className="ml-3 text-gray-600">Loading networks...</span>
+          </div>
+        ) : networks.length === 0 ? (
+          <div className="text-center py-8 text-gray-500 border border-gray-200 rounded-lg">
+            <Network className="w-8 h-8 mx-auto mb-2 text-gray-400" />
+            <p className="text-sm">No networks available</p>
+            <p className="text-xs mt-1">Please select a server first</p>
+          </div>
+        ) : (
+          <div className="space-y-1.5 md:space-y-2 w-full max-w-full">
+            {networks.map((network) => {
+              const isSelected = selectedNetworkIds.includes(
+                network.id || network.network_id
+              )
+              return (
+                <button
+                  key={network.id || network.network_id}
+                  type="button"
+                  onClick={() => onToggle(network.id || network.network_id)}
+                  className={`w-full max-w-full p-2 md:p-3 border-2 rounded-lg text-left transition-all ${
+                    isSelected
+                      ? 'border-blue-600 bg-blue-50'
+                      : 'border-gray-200 hover:border-gray-300 hover:bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex-1 min-w-0 overflow-hidden">
+                      <div className="font-semibold text-xs md:text-sm text-gray-900 truncate">
+                        {network.name || network.network_name || 'Unnamed Network'}
+                      </div>
+                      <div className="text-[10px] md:text-xs text-gray-600 mt-0.5 space-y-0.5">
+                        {network.type && <div>Type: {network.type}</div>}
+                        {network.cidr && <div>CIDR: {network.cidr}</div>}
+                      </div>
+                    </div>
+                    <div
+                      className={`w-4 h-4 md:w-5 md:h-5 rounded border-2 flex items-center justify-center shrink-0 ${
+                        isSelected ? 'border-blue-600 bg-blue-600' : 'border-gray-300'
+                      }`}
+                    >
+                      {isSelected && <CheckCircle2 className="w-3 h-3 md:w-4 md:h-4 text-white" />}
                     </div>
                   </div>
-                  <div
-                    className={`w-4 h-4 md:w-5 md:h-5 rounded border-2 flex items-center justify-center shrink-0 ${
-                      isSelected ? 'border-blue-600 bg-blue-600' : 'border-gray-300'
-                    }`}
-                  >
-                    {isSelected && <CheckCircle2 className="w-3 h-3 md:w-4 md:h-4 text-white" />}
-                  </div>
-                </div>
-              </button>
-            )
-          })}
-        </div>
-      )}
+                </button>
+              )
+            })}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -879,18 +968,31 @@ function AnsibleSetupStep({
 }) {
   // 일반적인 패키지 목록
   const availablePackages = [
+    { id: 'ca-certificates', name: 'ca-certificates', description: 'Trusted CA certificates' },
     { id: 'curl', name: 'curl', description: 'Command-line tool for transferring data' },
     { id: 'wget', name: 'wget', description: 'Non-interactive network downloader' },
     { id: 'git', name: 'Git', description: 'Version control system' },
+    { id: 'git-lfs', name: 'Git LFS', description: 'Git extension for large files' },
     { id: 'vim', name: 'Vim', description: 'Text editor' },
+    { id: 'tmux', name: 'tmux', description: 'Terminal multiplexer' },
+    { id: 'tree', name: 'tree', description: 'Display directory tree' },
     { id: 'htop', name: 'htop', description: 'Interactive process viewer' },
+    { id: 'jq', name: 'jq', description: 'JSON processor for CLI' },
+    { id: 'ripgrep', name: 'ripgrep', description: 'Fast text search tool' },
+    { id: 'unzip', name: 'unzip', description: 'Extract ZIP archives' },
+    { id: 'zip', name: 'zip', description: 'Create ZIP archives' },
+    { id: 'rsync', name: 'rsync', description: 'Fast incremental file sync' },
     { id: 'net-tools', name: 'net-tools', description: 'Network configuration tools (ifconfig, netstat)' },
+    { id: 'nfs-common', name: 'nfs-common', description: 'NFS client utilities' },
+    { id: 'openssh-server', name: 'OpenSSH Server', description: 'SSH server daemon' },
+    { id: 'python3-venv', name: 'Python venv', description: 'Python virtual environment support' },
     { id: 'docker', name: 'Docker', description: 'Container platform' },
     { id: 'docker-compose', name: 'Docker Compose', description: 'Multi-container Docker application tool' },
     { id: 'nginx', name: 'Nginx', description: 'Web server and reverse proxy' },
     { id: 'nodejs', name: 'Node.js', description: 'JavaScript runtime' },
     { id: 'python3-pip', name: 'Python pip', description: 'Python package installer' },
     { id: 'postgresql', name: 'PostgreSQL', description: 'Relational database' },
+    { id: 'mysql-server', name: 'MySQL Server', description: 'Relational database server' },
     { id: 'redis', name: 'Redis', description: 'In-memory data structure store' },
     { id: 'certbot', name: 'Certbot', description: 'Let\'s Encrypt SSL certificate tool' },
     { id: 'fail2ban', name: 'Fail2ban', description: 'Intrusion prevention software' },
@@ -898,14 +1000,17 @@ function AnsibleSetupStep({
 
   // Ansible 역할 목록
   const availableRoles = [
+    { id: 'base', name: 'Base Ops', description: 'Install common operational tools and baseline runtime packages' },
     { id: 'docker', name: 'Docker Setup', description: 'Install and configure Docker with Docker Compose' },
+    { id: 'python', name: 'Python Runtime', description: 'Install Python runtime and package tools (pip, venv)' },
+    { id: 'nodejs', name: 'Node.js Runtime', description: 'Install Node.js runtime for JavaScript applications' },
     { id: 'nginx', name: 'Nginx Web Server', description: 'Install and configure Nginx web server' },
+    { id: 'postgresql', name: 'PostgreSQL Server', description: 'Install and enable PostgreSQL database service' },
+    { id: 'mysql', name: 'MySQL Server', description: 'Install and enable MySQL database service' },
+    { id: 'redis', name: 'Redis Server', description: 'Install and enable Redis in-memory cache service' },
+    { id: 'nfs', name: 'NFS Client', description: 'Install NFS client utilities for shared storage mounts' },
     { id: 'ssl', name: 'SSL/TLS Setup', description: 'Configure SSL certificates with Let\'s Encrypt' },
     { id: 'firewall', name: 'Firewall Configuration', description: 'Configure UFW or firewalld' },
-    { id: 'monitoring', name: 'Monitoring Tools', description: 'Install monitoring tools (Prometheus, Grafana)' },
-    { id: 'backup', name: 'Backup Setup', description: 'Configure automated backup system' },
-    { id: 'security', name: 'Security Hardening', description: 'Apply security best practices' },
-    { id: 'kubernetes', name: 'Kubernetes', description: 'Install and configure Kubernetes cluster' },
   ]
 
   const handlePackageToggle = (packageId) => {
@@ -930,7 +1035,7 @@ function AnsibleSetupStep({
     <div className="w-full max-w-full min-w-0">
       <h3 className="text-base md:text-lg font-semibold text-gray-900 mb-1">Ansible Configuration</h3>
       <p className="text-xs md:text-sm text-gray-500 mb-2 md:mb-3">
-        Select packages and roles to install on your instance after deployment
+        Select packages and roles to install and configure on your instance after deployment
       </p>
 
       {/* Packages Section */}
@@ -986,7 +1091,7 @@ function AnsibleSetupStep({
           Ansible Roles
         </h4>
         <p className="text-[10px] md:text-xs text-gray-500 mb-1.5">
-          Select Ansible roles for advanced configuration and setup
+          Select Ansible roles for advanced configuration and setup (currently implemented roles only)
         </p>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-1.5 md:gap-2 max-h-48 md:max-h-64 lg:max-h-80 overflow-y-auto border border-gray-200 rounded-lg p-2 md:p-3 bg-gray-50 w-full max-w-full">
           {availableRoles.map((role) => {

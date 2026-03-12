@@ -28,7 +28,6 @@ class InfraActionType(str, Enum):
     CREATE_VM = "create_vm"
     # VM 생성 전 질의응답(슬롯 채우기)을 위한 보조 조회 액션들
     LIST_TEMPLATES = "list_templates"
-    LIST_ISO_IMAGES = "list_iso_images"
     LIST_STORAGES = "list_storages"
     LIST_NETWORKS = "list_networks"
 
@@ -85,8 +84,6 @@ class InfraActionService:
             return self._execute_create_vm(action, background_tasks=background_tasks)
         if action.type == InfraActionType.LIST_TEMPLATES:
             return self._execute_list_templates(action)
-        if action.type == InfraActionType.LIST_ISO_IMAGES:
-            return self._execute_list_iso_images(action)
         if action.type == InfraActionType.LIST_STORAGES:
             return self._execute_list_storages(action)
         if action.type == InfraActionType.LIST_NETWORKS:
@@ -231,42 +228,6 @@ class InfraActionService:
             raw_result={"templates": templates},
         )
 
-    def _execute_list_iso_images(self, action: InfraAction) -> InfraActionResult:
-        """
-        Proxmox ISO 이미지 목록 조회 액션.
-
-        - ISO 설치 기반 VM 생성을 위해 선택 가능한 ISO 목록을 제공한다.
-        """
-        node = action.params.get("node") or action.params.get("server_id") or None
-        if isinstance(node, str):
-            node = node.strip() or None
-
-        iso_images = self.proxmox_service.get_iso_images(node=node)
-        count = len(iso_images)
-
-        if count == 0:
-            header = "사용 가능한 ISO 이미지를 찾지 못했습니다."
-            msg = header + "\n(ISO가 업로드되어 있는지 Proxmox 스토리지를 확인해 보세요.)"
-        else:
-            header = f"사용 가능한 ISO 이미지 {count}개를 조회했습니다."
-            preview_lines = []
-            for iso in iso_images[:10]:
-                name = iso.get("iso_name") or iso.get("name") or "이름 없음"
-                iso_id = iso.get("iso_id") or iso.get("id") or "-"
-                storage = iso.get("storage", "-")
-                size_gb = iso.get("size_gb", 0)
-                preview_lines.append(
-                    f"- {name} (ID: {iso_id}, 스토리지: {storage}, 크기: {size_gb}GB)"
-                )
-            if count > 10:
-                preview_lines.append(f"... 그 외 {count - 10}개 ISO 이미지 더 있음")
-            msg = header + "\n\n" + "\n".join(preview_lines)
-
-        return InfraActionResult(
-            result_message=msg,
-            raw_result={"iso_images": iso_images},
-        )
-
     def _execute_list_storages(self, action: InfraAction) -> InfraActionResult:
         """
         Proxmox 스토리지 목록 조회 액션.
@@ -357,13 +318,23 @@ class InfraActionService:
         action: InfraAction,
         background_tasks: Optional[BackgroundTasks],
     ) -> InfraActionResult:
+        params = action.params or {}
+
+        if not params.get("template_id"):
+            return InfraActionResult(
+                result_message=(
+                    "VM 생성에는 template_id 가 필요합니다. "
+                    "먼저 템플릿 목록을 조회하고 하나를 선택해 주세요."
+                ),
+                raw_result={"missing": "template_id"},
+            )
+
         if background_tasks is None:
             return InfraActionResult(
                 result_message="VM 생성 액션에는 BackgroundTasks 인스턴스가 필요합니다.",
                 raw_result=None,
             )
 
-        params = action.params or {}
         deploy_request: Dict[str, Any] = {}
 
         if "server_name" in params:
@@ -372,8 +343,6 @@ class InfraActionService:
             deploy_request["server_id"] = params["server_id"]
         if "template_id" in params:
             deploy_request["template_id"] = params["template_id"]
-        if "iso_image_id" in params:
-            deploy_request["iso_image_id"] = params["iso_image_id"]
         if "cpu_cores" in params:
             deploy_request["cpu_cores"] = params["cpu_cores"]
         if "memory_gb" in params:
@@ -415,4 +384,3 @@ __all__ = [
     "InfraActionResult",
     "InfraActionType",
 ]
-

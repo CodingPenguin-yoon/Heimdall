@@ -1,269 +1,157 @@
-# 환경 변수 설정 상세 설명
+# Environment Settings Explained
 
-이 문서는 `env.example` 파일의 Terraform과 Ansible 설정 부분에 대한 상세한 설명입니다.
+이 문서는 현재 코드가 실제로 읽는 환경변수만 정리한다. 기준 파일은 `run.sh`, `backend/app/main.py`, `backend/app/services/*`, `frontend/src/services/api.js` 이다.
 
-## 📋 설정 항목 (22-46번 라인)
+## 1. 핵심 요약
 
-### 1. Terraform 설정 (23-32번 라인)
+- 루트 `.env` 가 사실상 운영 중심 설정 파일이다.
+- 백엔드는 시작 시 루트 `.env` 를 로드한다.
+- `run.sh` 도 같은 `.env` 를 읽어 `TF_VAR_proxmox_*` 값을 export 한다.
+- Terraform 관련 자격증명은 `PROXMOX_*` 로 넣어도 되고, 필요하면 `TF_VAR_proxmox_*` 로 직접 넣을 수도 있다.
+- 저장소에는 현재 `env.example` 이 없다.
 
-```bash
-# ============================================
-# Terraform 설정 (제어용)
-# ============================================
-# 주의: Terraform은 TF_VAR_ 접두사를 가진 환경변수를 자동으로 읽습니다.
-# run.sh 스크립트가 자동으로 변환하므로, 아래 변수들은 설정하지 않아도 됩니다.
-# (PROXMOX_API_URL, PROXMOX_API_TOKEN_ID, PROXMOX_API_TOKEN_SECRET가 자동 변환됨)
+## 2. 서버 실행 관련
 
-# Terraform TLS 검증 설정 (선택사항)
-# PROXMOX_TLS_INSECURE와 동일한 값 사용
-# TF_VAR_proxmox_tls_insecure=false
-```
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `BACKEND_PORT` | `8000` | `run.sh` | `uvicorn` 실행 포트 |
+| `FRONTEND_PORT` | `5173` | `run.sh`, `backend/app/main.py` | 프론트 개발 서버 포트, 백엔드 CORS 허용 포트 |
+| `VITE_API_TIMEOUT_MS` | `120000` | `frontend/src/services/api.js` | 프론트 axios 타임아웃 |
 
-#### 🔍 설명
+주의:
 
-**자동 변환 메커니즘:**
-- `run.sh` 스크립트가 `.env` 파일을 읽어서 자동으로 Terraform 변수로 변환합니다
-- 별도로 `TF_VAR_` 접두사를 붙여서 설정할 필요가 없습니다
+- 백엔드는 `0.0.0.0` 로 바인딩하지만, CORS 허용 origin 은 기본적으로 `localhost` 와 `127.0.0.1` 만 포함한다.
 
-**자동 변환되는 변수들:**
-```bash
-# .env 파일에 이렇게 설정하면:
-PROXMOX_API_URL=https://192.168.2.11:8006/api2/json
-PROXMOX_API_TOKEN_ID=root@pam!terraform-admin
-PROXMOX_API_TOKEN_SECRET=your-secret
+## 3. Proxmox API 관련
 
-# run.sh가 자동으로 이렇게 변환:
-export TF_VAR_proxmox_api_url="https://192.168.2.11:8006/api2/json"
-export TF_VAR_proxmox_api_token_id="root@pam!terraform-admin"
-export TF_VAR_proxmox_api_token_secret="your-secret"
-```
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `PROXMOX_API_URL` | 없음 | ProxmoxService, TerraformService, `run.sh` | Proxmox API URL |
+| `PROXMOX_API_TOKEN_ID` | 없음 | ProxmoxService, TerraformService, `run.sh` | API 토큰 ID |
+| `PROXMOX_API_TOKEN_SECRET` | 없음 | ProxmoxService, TerraformService, `run.sh` | API 토큰 secret |
+| `PROXMOX_TLS_INSECURE` | `false` in ProxmoxService | ProxmoxService, TerraformService, `run.sh` | TLS 검증 비활성화 여부 |
+| `PROXMOX_API_CONNECT_TIMEOUT_SECONDS` | 없음 | ProxmoxService | 연결 타임아웃 |
+| `PROXMOX_API_READ_TIMEOUT_SECONDS` | 없음 | ProxmoxService | 읽기 타임아웃 |
+| `PROXMOX_API_TIMEOUT_SECONDS` | 없음 | ProxmoxService | 개별 타임아웃 미설정 시 fallback |
 
-**Terraform이 환경변수를 읽는 방식:**
-- Terraform은 `TF_VAR_` 접두사가 붙은 환경변수를 자동으로 변수로 인식합니다
-- 예: `TF_VAR_proxmox_api_url` → Terraform의 `var.proxmox_api_url` 변수
+## 4. Terraform 관련
 
-**TLS 검증 설정 (선택사항):**
-```bash
-# 주석 처리되어 있음 (기본값 사용)
-# TF_VAR_proxmox_tls_insecure=false
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `TF_VAR_proxmox_api_url` | 없음 | Terraform CLI subprocess | Terraform provider 입력값 |
+| `TF_VAR_proxmox_api_token_id` | 없음 | Terraform CLI subprocess | Terraform provider 입력값 |
+| `TF_VAR_proxmox_api_token_secret` | 없음 | Terraform CLI subprocess | Terraform provider 입력값 |
+| `TF_VAR_proxmox_tls_insecure` | 없음 | Terraform CLI subprocess | Terraform provider 입력값 |
+| `TF_AUTO_MIGRATE_LEGACY_STATE` | `false` | DeploymentService | legacy local state 자동 이관 여부 |
+| `TF_AUTO_MIGRATE_LEGACY_STATE_FORCE` | `false` | DeploymentService | 대상 workspace 에 state 가 있어도 강제 push |
+| `TF_AUTO_MIGRATE_LEGACY_STATE_STRICT` | `false` | DeploymentService | 이관 실패 시 배포 중단 여부 |
 
-# 필요시 주석 해제하고 설정:
-TF_VAR_proxmox_tls_insecure=true
-```
+동작 메모:
 
-**실제 사용 예시:**
-```bash
-# 1. .env 파일에 Proxmox 설정만 입력
-PROXMOX_API_URL=https://192.168.2.11:8006/api2/json
-PROXMOX_API_TOKEN_ID=root@pam!terraform-admin
-PROXMOX_API_TOKEN_SECRET=your-secret
+- `backend/app/services/terraform/__init__.py` 가 `PROXMOX_*` 값을 보고 `TF_VAR_proxmox_*` 로 자동 매핑한다.
+- 즉 `.env` 에 `PROXMOX_*` 만 있어도 Terraform 실행은 가능하다.
+- workspace 별 state 를 사용하므로 요청별 `server_name` 이 중요하다.
+
+## 5. Ansible / SSH 관련
+
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `ANSIBLE_SSH_USER` | `root` | DeploymentService, AnsibleService | Ansible 접속 사용자, cloud-init 주입 사용자 |
+| `ANSIBLE_SSH_PRIVATE_KEY_FILE` | 없음 | AnsibleService | 동적 inventory 에 넣는 개인키 경로 |
+| `ANSIBLE_SSH_PUBLIC_KEY_FILE` | `~/.ssh/id_rsa.pub` fallback `~/.ssh/id_ed25519.pub` | DeploymentService | Terraform cloud-init 으로 VM 에 주입할 공개키 |
+
+주의:
+
+- 공개키를 못 읽으면 Terraform 은 계속 진행하지만, 이후 Ansible SSH 접속이 실패할 수 있다.
+- 개인키는 inventory 생성 시에만 들어간다.
+
+## 6. IP Pool 관련
+
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `IP_POOL_START` | 없음 | NetworkService | IP 풀 시작 주소 |
+| `IP_POOL_END` | 없음 | NetworkService | IP 풀 끝 주소 |
+| `IP_GATEWAY` | 없음 | NetworkService | 게이트웨이 주소 |
+| `IP_SUBNET` | `24` | NetworkService | CIDR subnet 크기 |
+
+이 값들이 모두 있어야 `/api/network/ip-pool/*` 계열 엔드포인트가 의미 있게 동작한다.
+
+제한:
+
+- 사용 여부 확인은 DHCP lease 조회가 아니라 `ping` 기반이다.
+- ICMP 차단 환경에서는 실제 사용 중인데도 사용 가능으로 보일 수 있다.
+
+## 7. Task / SSE 관련
+
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `TASK_EVENT_BUFFER_SIZE` | `5000` | TaskManager | 메모리 이벤트 버퍼 크기 |
+| `TASK_AUTO_ARCHIVE_DAYS` | `14` | TaskManager | 완료 작업 자동 아카이브 기준 일수 |
+| `TASK_AUTO_ARCHIVE_CHECK_INTERVAL_SECONDS` | `300` | TaskManager | 자동 아카이브 검사 주기 |
+
+작업 기록은 `backend/data/task_history.json` 에 저장된다.
+
+## 8. LLM / Redis 관련
+
+| 변수 | 기본값 | 사용 위치 | 설명 |
+| --- | --- | --- | --- |
+| `GEMINI_API_KEY` | 없음 | `backend/app/services/llm/llm_core.py` | Gemini 호출 키 |
+| `GEMINI_MODEL_NAME` | `gemini-2.0-flash` | LLMCore | 사용 모델명 |
+| `GEMINI_TIMEOUT_SECONDS` | `30` | LLMCore | 요청 타임아웃 |
+| `REDIS_HOST` | `localhost` | ChatSessionService | Redis 호스트 |
+| `REDIS_PORT` | `6379` | ChatSessionService | Redis 포트 |
+| `REDIS_DB` | `0` | ChatSessionService | Redis DB 번호 |
+| `REDIS_PASSWORD` | 없음 | ChatSessionService | Redis 비밀번호 |
+| `CHAT_SESSION_TTL_SECONDS` | `604800` | ChatSessionService | 세션 TTL |
+| `CHAT_MAX_MESSAGES` | `100` | ChatSessionService | 저장 메시지 최대 개수 |
+
+메모:
+
+- Redis 가 없어도 LLM 채팅 엔드포인트는 뜰 수 있지만, 세션 이력 저장은 제한된다.
+- 현재 활성 LLM 라우트는 `backend/app/domains/llm/*` 쪽이다.
+
+## 9. 권장 `.env` 베이스라인
+
+```dotenv
+BACKEND_PORT=8000
+FRONTEND_PORT=5173
+
+PROXMOX_API_URL=https://your-proxmox.example.com:8006
+PROXMOX_API_TOKEN_ID=root@pam!token-name
+PROXMOX_API_TOKEN_SECRET=replace-me
 PROXMOX_TLS_INSECURE=true
 
-# 2. run.sh 실행 시 자동 변환됨
-./run.sh
-
-# 3. Terraform이 자동으로 변수 읽음
-# terraform apply 실행 시 자동으로 사용됨
-```
-
----
-
-### 2. Ansible 설정 (34-45번 라인)
-
-```bash
-# ============================================
-# Ansible 설정
-# ============================================
-# SSH 접속 사용자명
-# 생성된 VM에 Ansible이 접속할 때 사용하는 사용자
-# 일반적으로 root 또는 sudo 권한이 있는 사용자
 ANSIBLE_SSH_USER=root
+ANSIBLE_SSH_PRIVATE_KEY_FILE=/absolute/path/to/id_rsa
+ANSIBLE_SSH_PUBLIC_KEY_FILE=/absolute/path/to/id_rsa.pub
 
-# SSH 개인키 파일 경로
-# VM에 SSH 접속할 때 사용할 개인키
-# 절대 경로 또는 ~/.ssh/id_rsa 형식 사용 가능
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/id_rsa
+IP_POOL_START=192.168.2.100
+IP_POOL_END=192.168.2.150
+IP_GATEWAY=192.168.2.1
+IP_SUBNET=24
 ```
 
-#### 🔍 설명
+LLM 기능까지 쓰려면 추가:
 
-**ANSIBLE_SSH_USER:**
-- **용도**: 생성된 VM에 Ansible이 SSH로 접속할 때 사용하는 사용자명
-- **기본값**: `root`
-- **설정 방법**: 
-  ```bash
-  # root 사용자 (권장)
-  ANSIBLE_SSH_USER=root
-  
-  # 다른 사용자 (sudo 권한 필요)
-  ANSIBLE_SSH_USER=ubuntu
-  ANSIBLE_SSH_USER=admin
-  ```
-
-**ANSIBLE_SSH_PRIVATE_KEY_FILE:**
-- **용도**: VM에 SSH 접속할 때 사용할 개인키 파일 경로
-- **기본값**: `~/.ssh/id_rsa`
-- **설정 방법**:
-  ```bash
-  # 홈 디렉토리 기준 (권장)
-  ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/id_rsa
-  
-  # 절대 경로
-  ANSIBLE_SSH_PRIVATE_KEY_FILE=/home/user/.ssh/id_rsa
-  
-  # 다른 키 파일
-  ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/proxmox_key
-  ```
-
-#### 🛠️ SSH 키 설정 방법
-
-**1. SSH 키가 없는 경우 생성:**
-```bash
-# RSA 키 생성 (4096비트 권장)
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-
-# 또는 ED25519 키 생성 (더 안전)
-ssh-keygen -t ed25519 -f ~/.ssh/id_ed25519
+```dotenv
+GEMINI_API_KEY=replace-me
+GEMINI_MODEL_NAME=gemini-2.0-flash
+GEMINI_TIMEOUT_SECONDS=30
 ```
 
-**2. 공개키를 VM에 복사:**
-```bash
-# 방법 1: ssh-copy-id 사용 (권장)
-ssh-copy-id -i ~/.ssh/id_rsa.pub root@vm-ip-address
+Redis 세션 저장까지 쓰려면 추가:
 
-# 방법 2: 수동 복사
-cat ~/.ssh/id_rsa.pub | ssh root@vm-ip-address "mkdir -p ~/.ssh && cat >> ~/.ssh/authorized_keys"
-
-# 방법 3: Cloud-init 사용 (자동화)
-# 템플릿에 공개키가 이미 포함되어 있으면 자동으로 설정됨
+```dotenv
+REDIS_HOST=localhost
+REDIS_PORT=6379
+REDIS_DB=0
+REDIS_PASSWORD=
+CHAT_SESSION_TTL_SECONDS=604800
+CHAT_MAX_MESSAGES=100
 ```
 
-**3. SSH 키 권한 확인:**
-```bash
-# 개인키 권한 확인 (600이어야 함)
-chmod 600 ~/.ssh/id_rsa
+## 10. 현재 문서화 대상에서 제외한 것
 
-# 디렉토리 권한 확인 (700이어야 함)
-chmod 700 ~/.ssh
-```
-
-#### 📝 실제 사용 예시
-
-**시나리오 1: 기본 설정 (root 사용자)**
-```bash
-# .env 파일
-ANSIBLE_SSH_USER=root
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/id_rsa
-
-# SSH 키 생성 및 복사
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-ssh-copy-id -i ~/.ssh/id_rsa.pub root@vm-ip
-```
-
-**시나리오 2: Ubuntu 사용자 (sudo 권한)**
-```bash
-# .env 파일
-ANSIBLE_SSH_USER=ubuntu
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/id_rsa
-
-# SSH 키 복사
-ssh-copy-id -i ~/.ssh/id_rsa.pub ubuntu@vm-ip
-```
-
-**시나리오 3: 커스텀 키 파일**
-```bash
-# .env 파일
-ANSIBLE_SSH_USER=root
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/proxmox_deploy_key
-
-# 커스텀 키 생성
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/proxmox_deploy_key
-ssh-copy-id -i ~/.ssh/proxmox_deploy_key.pub root@vm-ip
-```
-
----
-
-## 🔄 전체 워크플로우
-
-### 1. 환경 변수 설정
-```bash
-# .env 파일 생성
-cp env.example .env
-
-# .env 파일 편집
-nano .env
-```
-
-### 2. 필수 항목 설정
-```bash
-# Proxmox 설정 (자동으로 Terraform 변수로 변환됨)
-PROXMOX_API_URL=https://192.168.2.11:8006/api2/json
-PROXMOX_API_TOKEN_ID=root@pam!terraform-admin
-PROXMOX_API_TOKEN_SECRET=your-secret
-
-# Ansible 설정
-ANSIBLE_SSH_USER=root
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/id_rsa
-```
-
-### 3. SSH 키 준비
-```bash
-# 키 생성 (없는 경우)
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-
-# 권한 설정
-chmod 600 ~/.ssh/id_rsa
-chmod 700 ~/.ssh
-```
-
-### 4. 실행
-```bash
-# run.sh 실행 (자동으로 환경변수 로드 및 변환)
-./run.sh
-```
-
----
-
-## ❓ 자주 묻는 질문
-
-### Q1: Terraform 변수를 직접 설정해야 하나요?
-**A:** 아니요. `run.sh`가 자동으로 변환하므로 `.env` 파일에 Proxmox 설정만 하면 됩니다.
-
-### Q2: SSH 키가 없으면 어떻게 하나요?
-**A:** `ssh-keygen` 명령어로 생성하세요:
-```bash
-ssh-keygen -t rsa -b 4096 -f ~/.ssh/id_rsa
-```
-
-### Q3: VM에 SSH 접속이 안 되면?
-**A:** 다음을 확인하세요:
-- SSH 키 권한: `chmod 600 ~/.ssh/id_rsa`
-- 공개키가 VM에 복사되었는지 확인
-- VM의 SSH 서비스가 실행 중인지 확인
-
-### Q4: 다른 사용자로 접속하려면?
-**A:** `ANSIBLE_SSH_USER`를 변경하고 해당 사용자에게 공개키를 복사하세요:
-```bash
-ANSIBLE_SSH_USER=ubuntu
-ssh-copy-id -i ~/.ssh/id_rsa.pub ubuntu@vm-ip
-```
-
-### Q5: 여러 개의 SSH 키를 사용하려면?
-**A:** 각 키 파일에 대해 별도로 설정하거나, SSH config 파일을 사용하세요:
-```bash
-ANSIBLE_SSH_PRIVATE_KEY_FILE=~/.ssh/proxmox_key
-```
-
----
-
-## ✅ 체크리스트
-
-설정 완료 후 확인사항:
-
-- [ ] `.env` 파일에 Proxmox API 정보 입력 완료
-- [ ] `ANSIBLE_SSH_USER` 설정 완료
-- [ ] `ANSIBLE_SSH_PRIVATE_KEY_FILE` 경로 확인
-- [ ] SSH 키 파일 존재 확인 (`ls -la ~/.ssh/id_rsa`)
-- [ ] SSH 키 권한 확인 (`chmod 600 ~/.ssh/id_rsa`)
-- [ ] 공개키가 VM에 복사되었는지 확인
-- [ ] `run.sh` 실행 시 자동 변환 확인
+- 저장소 안에 실제 비밀값 예시는 적지 않는다.
+- 사용 흔적이 없는 외부 배포 환경 변수는 문서화하지 않았다.
+- 요청 payload 필드 중 환경변수가 아닌 값은 이 문서가 아니라 API/배포 플로우 문서를 참고한다.
