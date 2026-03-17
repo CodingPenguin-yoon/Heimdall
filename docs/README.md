@@ -27,6 +27,13 @@
 - [flows/02_LLM_INFRA_ASSISTANT_FLOW.md](flows/02_LLM_INFRA_ASSISTANT_FLOW.md)
 - [flows/03_MONITORING_FLOW.md](flows/03_MONITORING_FLOW.md)
 
+## Platform Expansion
+
+- [platform/00_PLATFORM_DESIGN_SUMMARY.md](platform/00_PLATFORM_DESIGN_SUMMARY.md)
+- [platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md](platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md)
+- [platform/02_IMPLEMENTATION_ROADMAP.md](platform/02_IMPLEMENTATION_ROADMAP.md)
+- [platform/03_PROJECT_MANIFEST_SPEC.md](platform/03_PROJECT_MANIFEST_SPEC.md)
+
 ## Reading Notes
 
 - 이 문서는 “의도한 설계”보다 “현재 구현된 동작”을 우선 설명한다.
