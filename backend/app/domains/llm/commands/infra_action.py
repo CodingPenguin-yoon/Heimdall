@@ -2,9 +2,7 @@
 인프라 액션 실행 서비스 모듈 (LLM 도메인 commands 버전)
 
 배경/의도/목적:
-- 기존 `app.services.llm.infra_action_service.InfraActionService` 구현을
-  도메인 구조 `app.domains.llm.commands.infra_action` 로 옮겨와,
-  LLM 도메인에서 사용하는 인프라 액션 어댑터를 한 곳에 모은다.
+- LLM 도메인에서 사용하는 인프라 액션 어댑터를 한 곳에 모은다.
 """
 
 from __future__ import annotations
@@ -15,8 +13,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
 
-from app.services.deployment.service import DeploymentService
-from app.services.proxmox import ProxmoxService
+from app.domains.deploy.service import DeploymentService
+from app.domains.proxmox.service import ProxmoxService
 
 
 class InfraActionType(str, Enum):

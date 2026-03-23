@@ -10,12 +10,59 @@
 - name: Infrastructure Configuration Playbook
   hosts: all
   become: yes
-  gather_facts: yes
+  gather_facts: no
 
   vars:
     # extra_vars로 전달된 변수를 로컬 변수로 매핑 (순환 참조 방지)
     pkg_list: "{{ packages_to_install | default([]) }}"
     role_list: "{{ roles_to_apply | default([]) }}"
+
+  pre_tasks:
+    - name: Wait for SSH to become ready
+      wait_for_connection:
+        timeout: 300
+        sleep: 5
+        delay: 5
+
+    - name: Wait for cloud-init to finish when present (initial attempt)
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --wait
+        fi
+      args:
+        executable: /bin/bash
+      ignore_unreachable: true
+      changed_when: false
+      failed_when: false
+
+    - name: Give the guest a short recovery window after cloud-init network changes
+      pause:
+        seconds: 10
+
+    - name: Reset SSH connection after initial cloud-init wait
+      meta: reset_connection
+
+    - name: Wait for SSH to become ready again after cloud-init
+      wait_for_connection:
+        timeout: 300
+        sleep: 5
+        delay: 0
+
+    - name: Wait for cloud-init to finish when present (final attempt)
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --wait
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: false
+      failed_when: false
+
+    - name: Reset SSH connection before gathering facts
+      meta: reset_connection
+
+    - name: Gather facts after first-boot readiness checks
+      setup:
 
   tasks:
     - name: Display host information
@@ -27,6 +74,7 @@
       apt:
         update_cache: yes
         cache_valid_time: 3600
+        lock_timeout: 600
       when: ansible_os_family == "Debian"
 
     - name: Update package cache (RedHat/CentOS)
@@ -35,11 +83,22 @@
       when: ansible_os_family == "RedHat"
 
     # 선택한 패키지 설치
-    - name: Install selected packages
+    - name: Install selected packages (Debian/Ubuntu)
+      apt:
+        name: "{{ pkg_list }}"
+        state: present
+        lock_timeout: 600
+      when:
+        - pkg_list | length > 0
+        - ansible_os_family == "Debian"
+
+    - name: Install selected packages (RedHat/CentOS)
       package:
         name: "{{ pkg_list }}"
         state: present
-      when: pkg_list | length > 0
+      when:
+        - pkg_list | length > 0
+        - ansible_os_family == "RedHat"
 
     # 특수 패키지 처리 (Docker, Node.js 등)
     - name: Install Docker (Debian/Ubuntu)
@@ -48,6 +107,7 @@
           - docker.io
           - docker-compose
         state: present
+        lock_timeout: 600
       when:
         - ansible_os_family == "Debian"
         - "'docker' in pkg_list or 'docker-compose' in pkg_list"
@@ -98,6 +158,7 @@
       apt:
         name: postgresql
         state: present
+        lock_timeout: 600
       when:
         - ansible_os_family == "Debian"
         - "'postgresql' in pkg_list"
@@ -140,7 +201,27 @@
     # 역할별 작업 (향후 확장 가능)
     - name: Base role setup
       block:
-        - name: Install base operational packages
+        - name: Install base operational packages (Debian/Ubuntu)
+          apt:
+            name:
+              - ca-certificates
+              - curl
+              - wget
+              - git
+              - vim
+              - htop
+              - jq
+              - net-tools
+              - rsync
+              - unzip
+              - zip
+              - python3-pip
+              - python3-venv
+            state: present
+            lock_timeout: 600
+          when: ansible_os_family == "Debian"
+
+        - name: Install base operational packages (non-Debian)
           package:
             name:
               - ca-certificates
@@ -157,14 +238,16 @@
               - python3-pip
               - python3-venv
             state: present
+          when: ansible_os_family != "Debian"
       when: "'base' in role_list"
 
     - name: Docker role setup
       block:
         - name: Ensure Docker is installed
-          package:
+          apt:
             name: docker.io
             state: present
+            lock_timeout: 600
           when: ansible_os_family == "Debian"
 
         - name: Start Docker service
@@ -176,13 +259,24 @@
 
     - name: Python runtime role setup
       block:
-        - name: Install Python runtime packages
+        - name: Install Python runtime packages (Debian/Ubuntu)
+          apt:
+            name:
+              - python3
+              - python3-pip
+              - python3-venv
+            state: present
+            lock_timeout: 600
+          when: ansible_os_family == "Debian"
+
+        - name: Install Python runtime packages (non-Debian)
           package:
             name:
               - python3
               - python3-pip
               - python3-venv
             state: present
+          when: ansible_os_family != "Debian"
       when: "'python' in role_list"
 
     - name: Node.js role setup (Debian/Ubuntu)

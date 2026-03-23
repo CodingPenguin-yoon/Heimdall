@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { Server, Cpu, Network, ChevronRight, CheckCircle2, Loader2, HardDrive, Package, XCircle, Search } from 'lucide-react'
 import { getServers, getTemplates, getServerStorage, getServerNetworks, checkIpAvailability } from '../services/api'
+import { validateStaticNetworkConfig } from '../utils/ipValidation'
 
 const STEPS = [
   { id: 1, name: 'Server & Template', icon: Server },
@@ -285,7 +286,7 @@ function CreateInstanceWizard({ config, onConfigChange, onDeploy, isDeploying = 
             vmIp={config.vmIp || ''}
             vmGateway={config.vmGateway || ''}
             onIpChange={(ip) => onConfigChange((prev) => ({ ...prev, vmIp: ip, ipChecked: null }))}
-            onGatewayChange={(gw) => onConfigChange((prev) => ({ ...prev, vmGateway: gw }))}
+            onGatewayChange={(gw) => onConfigChange((prev) => ({ ...prev, vmGateway: gw, ipChecked: null }))}
             ipChecked={config.ipChecked}
             onIpChecked={(status) => onConfigChange((prev) => ({ ...prev, ipChecked: status }))}
             loading={loading}
@@ -757,9 +758,18 @@ function NetworkSelectionStep({
   loading
 }) {
   const [checkingIp, setCheckingIp] = useState(false)
+  const staticValidationMessage = ipMode === 'static'
+    ? validateStaticNetworkConfig(vmIp, vmGateway)
+    : null
 
   const handleCheckIp = async () => {
     if (!vmIp) return
+
+    const validationMessage = validateStaticNetworkConfig(vmIp, vmGateway)
+    if (validationMessage) {
+      onIpChecked('error')
+      return
+    }
 
     setCheckingIp(true)
     onIpChecked(null)
@@ -862,12 +872,17 @@ function NetworkSelectionStep({
                     }`}>
                       {ipChecked === 'available' && <><CheckCircle2 className="w-3 h-3" /> Available</>}
                       {ipChecked === 'in_use' && <><XCircle className="w-3 h-3" /> Already in use</>}
-                      {ipChecked === 'error' && <><XCircle className="w-3 h-3" /> Check failed</>}
+                      {ipChecked === 'error' && (
+                        <>
+                          <XCircle className="w-3 h-3" />
+                          {staticValidationMessage || 'Check failed'}
+                        </>
+                      )}
                     </div>
                   )}
                   {ipMode === 'static' && !ipChecked && vmIp && (
                     <p className="mt-1 text-[10px] text-amber-600">
-                      Click check button to verify
+                      {staticValidationMessage || 'Click check button to verify'}
                     </p>
                   )}
                 </div>

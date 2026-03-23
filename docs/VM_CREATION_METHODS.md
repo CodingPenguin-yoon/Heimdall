@@ -1,90 +1,60 @@
-# VM Creation Methods
+# VM Creation and Instance Management
 
-이 문서는 현재 저장소가 실제로 제공하는 VM 생성 경로를 정리한다. UI 상 보이는 선택지와 백엔드/인프라 레이어의 실제 지원 범위는 완전히 같지 않다.
+현재 저장소의 VM 생성 범위와 기존 인스턴스 관리 범위를 정리한 문서다.
 
-## 1. 결론 먼저
+## 생성
 
-현재 안정적으로 지원되는 방식은 하나다.
+현재 지원:
 
 - Proxmox 템플릿 클론 기반 생성
+- Terraform + Ansible 연동
 
-현재는 명시적으로 막아 둔 방식:
+현재 미지원:
 
-- ISO 기반 생성
+- ISO 직접 설치 기반 생성
 
-현재 활성 경로가 아닌 것:
+즉 VM 생성의 표준 경로는 항상 `template_id` 기반이다.
 
-- `/destroy` API 기반 인프라 삭제
+## 생성 시 설정 가능한 것
 
-## 2. 지원 상태 표
+- target server
+- template
+- storage
+- network
+- server name
+- CPU
+- memory
+- DHCP 또는 static IP
+- Ansible packages
+- Ansible roles
 
-| 방식 | 프론트 UI | 백엔드 요청 모델 | Terraform 반영 | 실사용 권장 여부 |
-| --- | --- | --- | --- | --- |
-| 템플릿 클론 | 있음 | 있음 | 있음 | 권장 |
-| ISO 선택 | 숨김 | 없음 | 없음 | 비지원 |
-| Skip Terraform / Skip Ansible | API 필드 있음 | 있음 | 부분 지원 | 운영자용 예외 경로 |
-| Destroy 엔드포인트 | 활성 UI 없음 | 활성 라우트 없음 | 없음 | 사용 불가 |
+## 기존 인스턴스 관리
 
-## 3. 템플릿 클론 경로
+현재는 이미 생성된 인스턴스에 대해 아래 기능이 있다.
 
-실제 사용 흐름:
+- `terminate`
+- `start`
+- `shutdown`
+- `stop`
+- `reboot`
+- CPU / memory resize
 
-1. 프론트에서 `template_id` 선택
-2. `POST /api/deploy`
-3. DeploymentService 가 `template_id`, `server_id`, `storage_id`, `network_ids` 등으로 Terraform 변수 구성
-4. Terraform 이 `proxmox_virtual_environment_vm` 에서 `clone` 블록을 사용해 VM 생성
-5. 성공 시 output 에서 IP 추출
-6. 가능하면 Ansible 후처리
+리사이즈는 stopped 상태에서 수행하는 것이 기준이다.
 
-이 경로는 현재 코드와 인프라 파일이 가장 잘 맞는다.
-
-## 4. ISO 선택 경로
-
-현재 애플리케이션 코드에서는 ISO 기반 생성 경로를 제거했다. 템플릿 선택 없이 새 VM 생성 요청은 허용되지 않는다.
-
-## 5. Static IP / DHCP
-
-생성 방식과 별개로 네트워크 모드는 두 가지다.
+## 네트워크 메모
 
 ### DHCP
 
-- `vm_ip` 를 비워 둔다
-- Terraform guest agent 결과에 기대어 IP 를 읽는다
-- 템플릿에 guest agent 가 없으면 Ansible 단계가 이어지지 않을 수 있다
+- guest agent 가 있으면 IP 자동 감지가 안정적이다
+- DHCP 환경에서도 Ansible 까지 자동으로 이어질 수 있다
 
 ### Static IP
 
-- `vm_ip` 를 CIDR 형식으로 넘긴다
-- `vm_gateway` 를 함께 넘긴다
-- Terraform 출력은 CIDR 에서 주소 부분만 잘라 반환한다
+- CIDR 형식이 필요하다
+  - 예: `192.168.2.120/24`
 
-## 6. Skip 플래그
+## 정리
 
-`DeployRequest` 에는 아래 플래그가 있다.
-
-- `skip_terraform`
-- `skip_ansible`
-
-의미:
-
-- `skip_terraform=true`: 기존 VM 이 이미 있거나, Terraform 단계를 제외하고 운영자가 Ansible 만 돌리고 싶은 경우
-- `skip_ansible=true`: VM 생성까지만 하고 후속 구성을 생략하고 싶은 경우
-
-주의:
-
-- 프론트 기본 UI 는 이 플래그를 적극적으로 노출하지 않는다.
-- 일반 사용자 흐름보다 운영/디버깅용 경로에 가깝다.
-
-## 7. 현재 설계 불일치
-
-- 실제 인프라 레이어는 템플릿 클론 쪽만 열려 있다.
-- 외부 클라이언트도 템플릿 기반 payload 기준으로 맞춰야 한다.
-
-## 8. 운영 권장안
-
-현재 기준 추천 순서:
-
-1. 템플릿 클론만 표준 경로로 운영
-2. ISO 경로는 문서상 “비지원”으로 명시
-3. 필요하면 ISO 경로를 정말 구현하거나, 반대로 UI 에서 숨김 처리
-4. 삭제 기능은 별도 API/UX 설계 후 다시 연결
+- 생성 경로는 template clone only
+- ISO 경로는 현재 없다
+- 생성 이후 운영 액션과 resize 는 현재 이미 구현돼 있다

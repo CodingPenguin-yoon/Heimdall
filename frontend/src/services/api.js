@@ -105,6 +105,46 @@ export const terminateInstance = async ({
   }
 }
 
+export const performInstanceAction = async ({
+  node,
+  vmid,
+  action,
+  timeout_seconds = 60,
+}) => {
+  try {
+    const response = await apiClient.post('/instances/action', {
+      node,
+      vmid,
+      action,
+      timeout_seconds,
+    })
+    return response
+  } catch (error) {
+    console.error('Instance action API error:', error)
+    throw error
+  }
+}
+
+export const updateInstanceResources = async ({
+  node,
+  vmid,
+  cpu_cores,
+  memory_gb,
+}) => {
+  try {
+    const response = await apiClient.patch('/instances/resources', {
+      node,
+      vmid,
+      cpu_cores,
+      memory_gb,
+    })
+    return response
+  } catch (error) {
+    console.error('Update instance resources API error:', error)
+    throw error
+  }
+}
+
 // 상태 확인 API
 export const checkStatus = async (taskId) => {
   try {
@@ -364,6 +404,66 @@ export const getAvailableIps = async (limit = 10) => {
     return response
   } catch (error) {
     console.error('Get Available IPs API error:', error)
+    throw error
+  }
+}
+
+export const getGitLabProjects = async () => {
+  try {
+    const response = await apiClient.get('/gitlab/projects')
+    return response
+  } catch (error) {
+    console.error('Get GitLab projects API error:', error)
+    throw error
+  }
+}
+
+export const getGitLabNamespaces = async () => {
+  try {
+    const response = await apiClient.get('/gitlab/namespaces')
+    return response
+  } catch (error) {
+    console.error('Get GitLab namespaces API error:', error)
+    throw error
+  }
+}
+
+export const createGitLabProject = async (payload) => {
+  try {
+    const response = await apiClient.post('/gitlab/projects', payload)
+    return response
+  } catch (error) {
+    console.error('Create GitLab project API error:', error)
+    throw error
+  }
+}
+
+export const getGitLabProjectSettings = async (projectId) => {
+  try {
+    const response = await apiClient.get(`/gitlab/projects/${projectId}/settings`)
+    return response
+  } catch (error) {
+    console.error('Get GitLab project settings API error:', error)
+    throw error
+  }
+}
+
+export const updateGitLabProjectSettings = async (projectId, payload) => {
+  try {
+    const response = await apiClient.put(`/gitlab/projects/${projectId}/settings`, payload)
+    return response
+  } catch (error) {
+    console.error('Update GitLab project settings API error:', error)
+    throw error
+  }
+}
+
+export const syncGitLabProjects = async () => {
+  try {
+    const response = await apiClient.post('/gitlab/projects/sync')
+    return response
+  } catch (error) {
+    console.error('Sync GitLab projects API error:', error)
     throw error
   }
 }

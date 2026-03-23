@@ -2,8 +2,6 @@
 LLM 채팅 세션 관리 서비스 모듈 (도메인/commands 버전)
 
 배경/의도/목적:
-- 기존 `app.services.llm.chat_session.ChatSessionService` 구현을
-  도메인 구조 `app.domains.llm.commands.chat_session` 로 옮겨와 응집도를 높인다.
 - Redis 기반으로 세션별 대화 이력을 저장/조회/삭제하는 비즈니스 로직을 담당한다.
 """
 

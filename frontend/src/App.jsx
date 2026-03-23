@@ -1,12 +1,14 @@
 import { useState } from 'react'
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom'
 import CreateInstanceWizard from './components/CreateInstanceWizard'
+import GitLabWorkspace from './components/GitLabWorkspace'
 import InstanceList from './components/InstanceList'
 import MonitoringDashboard from './components/MonitoringDashboard'
 import LlmInfraChat from './components/LlmInfraChat'
 import TaskBoard from './components/TaskBoard'
-import { Server, List, Plus, Activity, Sparkles, Clock3 } from 'lucide-react'
+import { Server, List, Plus, Activity, Sparkles, Clock3, GitBranch } from 'lucide-react'
 import { deployInfrastructure, checkIpAvailability } from './services/api'
+import { validateStaticNetworkConfig } from './utils/ipValidation'
 
 const createInitialDeployConfig = () => ({
   selectedServerId: '',
@@ -64,7 +66,17 @@ function App() {
     addLog('Starting deployment request...', 'info')
 
     try {
-      if (deployConfig.ipMode === 'static' && deployConfig.vmIp) {
+      if (deployConfig.ipMode === 'static') {
+        const validationMessage = validateStaticNetworkConfig(deployConfig.vmIp, deployConfig.vmGateway)
+        if (validationMessage) {
+          setStatus('error')
+          setCreateMessage({
+            type: 'error',
+            text: validationMessage,
+          })
+          return
+        }
+
         const ipOnly = deployConfig.vmIp.split('/')[0]
         const ipCheckResponse = await checkIpAvailability(ipOnly)
 
@@ -175,6 +187,17 @@ function App() {
               Task Board
             </button>
             <button
+              onClick={() => navigate('/gitlab')}
+              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'gitlab'
+                  ? 'text-blue-600 border-blue-600 bg-blue-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <GitBranch className="w-5 h-5" />
+              GitLab
+            </button>
+            <button
               onClick={() => navigate('/monitoring')}
               className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'monitoring'
@@ -219,6 +242,12 @@ function App() {
             element={
               <TaskBoard focusTaskId={location.state?.focusTaskId} />
             }
+          />
+
+          {/* GitLab Workspace Route */}
+          <Route
+            path="/gitlab"
+            element={<GitLabWorkspace />}
           />
 
           {/* Monitoring Dashboard Route */}

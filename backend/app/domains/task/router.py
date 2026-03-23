@@ -1,8 +1,4 @@
-"""
-배포 작업 상태/로그 조회 API 라우트 (task 도메인)
-
-기존 `app.routes.status`, `app.routes.logs` 라우터를 도메인 구조로 옮긴 구현입니다.
-"""
+"""배포 작업 상태/로그 조회 API 라우트 (task 도메인)."""
 
 from __future__ import annotations
 
@@ -14,7 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.services.task.manager import task_manager
+from app.shared.tasks import task_manager
 
 
 router = APIRouter()

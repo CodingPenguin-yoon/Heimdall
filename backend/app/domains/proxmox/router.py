@@ -1,18 +1,14 @@
-"""
-Proxmox 리소스 조회/모니터링 API 라우트 (proxmox 도메인)
-
-기존 `app.routes.proxmox` 라우터를 도메인 구조로 옮긴 구현입니다.
-"""
+"""Proxmox 리소스 조회/모니터링 API 라우트 (proxmox 도메인)."""
 
 from __future__ import annotations
 
-from typing import List
+from typing import List, Literal
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from app.services.proxmox import ProxmoxService
-from app.services.network import network_service
+from app.domains.proxmox.service import ProxmoxService
+from app.shared.network import network_service
 
 
 router = APIRouter()
@@ -60,6 +56,45 @@ class TerminateInstanceRequest(BaseModel):
 
 class TerminateInstanceResponse(BaseModel):
     """인스턴스 종료/삭제 응답 모델"""
+
+    success: bool
+    node: str
+    vmid: int
+    message: str
+    details: dict
+
+
+class InstanceActionRequest(BaseModel):
+    """인스턴스 라이프사이클 액션 요청 모델"""
+
+    node: str
+    vmid: int
+    action: Literal["start", "shutdown", "stop", "reboot"]
+    timeout_seconds: int = Field(default=60, ge=5, le=600)
+
+
+class InstanceActionResponse(BaseModel):
+    """인스턴스 라이프사이클 액션 응답 모델"""
+
+    success: bool
+    node: str
+    vmid: int
+    action: str
+    message: str
+    details: dict
+
+
+class UpdateInstanceResourcesRequest(BaseModel):
+    """인스턴스 CPU/메모리 수정 요청 모델"""
+
+    node: str
+    vmid: int
+    cpu_cores: int = Field(ge=1)
+    memory_gb: float = Field(gt=0)
+
+
+class UpdateInstanceResourcesResponse(BaseModel):
+    """인스턴스 CPU/메모리 수정 응답 모델"""
 
     success: bool
     node: str
@@ -187,6 +222,79 @@ async def terminate_instance(request: TerminateInstanceRequest):
         raise HTTPException(
             status_code=500,
             detail=f"인스턴스 종료/삭제 실패: {str(e)}",
+        )
+
+
+@router.post("/instances/action", response_model=InstanceActionResponse)
+async def instance_action(request: InstanceActionRequest):
+    """
+    인스턴스 라이프사이클 액션 수행
+    """
+    try:
+        result = proxmox_service.perform_vm_action(
+            node=request.node,
+            vmid=request.vmid,
+            action=request.action,
+            timeout_seconds=request.timeout_seconds,
+        )
+
+        if not result.get("success"):
+            if result.get("not_found"):
+                raise HTTPException(status_code=404, detail=result.get("error") or "VM을 찾을 수 없습니다.")
+            if result.get("invalid_state"):
+                raise HTTPException(status_code=409, detail=result.get("error") or "현재 VM 상태에서는 해당 액션을 수행할 수 없습니다.")
+            raise HTTPException(status_code=409, detail=result.get("error") or "VM 액션 수행에 실패했습니다.")
+
+        return InstanceActionResponse(
+            success=True,
+            node=request.node,
+            vmid=request.vmid,
+            action=request.action,
+            message=result.get("message") or "VM action completed successfully.",
+            details=result,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"인스턴스 액션 실패: {str(e)}",
+        )
+
+
+@router.patch("/instances/resources", response_model=UpdateInstanceResourcesResponse)
+async def update_instance_resources(request: UpdateInstanceResourcesRequest):
+    """
+    정지된 인스턴스의 CPU/메모리 설정 수정
+    """
+    try:
+        result = proxmox_service.update_vm_resources(
+            node=request.node,
+            vmid=request.vmid,
+            cpu_cores=request.cpu_cores,
+            memory_gb=request.memory_gb,
+        )
+
+        if not result.get("success"):
+            if result.get("not_found"):
+                raise HTTPException(status_code=404, detail=result.get("error") or "VM을 찾을 수 없습니다.")
+            if result.get("invalid_state"):
+                raise HTTPException(status_code=409, detail=result.get("error") or "CPU/메모리 수정은 정지된 VM에서만 가능합니다.")
+            raise HTTPException(status_code=409, detail=result.get("error") or "VM 리소스 수정에 실패했습니다.")
+
+        return UpdateInstanceResourcesResponse(
+            success=True,
+            node=request.node,
+            vmid=request.vmid,
+            message=result.get("message") or "VM CPU/memory updated successfully.",
+            details=result,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"인스턴스 리소스 수정 실패: {str(e)}",
         )
 
 

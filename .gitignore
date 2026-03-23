@@ -52,8 +52,11 @@ Thumbs.db
 *.log
 
 # 런타임 태스크 히스토리 캐시
-backend/data/task_history.json
-backend/data/task_history.tmp
+data/task_history.json
+data/task_history.tmp
+data/*.db
+data/*.db-shm
+data/*.db-wal
 
 # 백업 파일
 *.bak
