@@ -6,7 +6,8 @@ import InstanceList from './components/InstanceList'
 import MonitoringDashboard from './components/MonitoringDashboard'
 import LlmInfraChat from './components/LlmInfraChat'
 import TaskBoard from './components/TaskBoard'
-import { Server, List, Plus, Activity, Sparkles, Clock3, GitBranch } from 'lucide-react'
+import OverviewDashboard from './components/OverviewDashboard'
+import { Server, List, Plus, Activity, Sparkles, Clock3, GitBranch, LayoutDashboard } from 'lucide-react'
 import { deployInfrastructure, checkIpAvailability } from './services/api'
 import { validateStaticNetworkConfig } from './utils/ipValidation'
 
@@ -26,10 +27,21 @@ const createInitialDeployConfig = () => ({
   ipChecked: null,
 })
 
+const getActiveTab = (pathname) => {
+  if (pathname === '/') return 'overview'
+  if (pathname.startsWith('/list')) return 'list'
+  if (pathname.startsWith('/create')) return 'create'
+  if (pathname.startsWith('/tasks')) return 'tasks'
+  if (pathname.startsWith('/gitlab')) return 'gitlab'
+  if (pathname.startsWith('/monitoring')) return 'monitoring'
+  if (pathname.startsWith('/assistant')) return 'assistant'
+  return 'overview'
+}
+
 function App() {
   const navigate = useNavigate()
   const location = useLocation()
-  const activeTab = location.pathname === '/' ? 'create' : location.pathname.replace('/', '')
+  const activeTab = getActiveTab(location.pathname)
   const [deployConfig, setDeployConfig] = useState(createInitialDeployConfig)
   const [status, setStatus] = useState('idle')
   const [logs, setLogs] = useState([])
@@ -144,7 +156,7 @@ function App() {
         <div className="container mx-auto px-8 py-5">
           <div className="flex items-center gap-3">
             <Server className="w-8 h-8 text-blue-600" />
-            <h1 className="text-2xl font-semibold text-gray-900">Infrastructure Control Dashboard</h1>
+            <h1 className="text-2xl font-semibold text-gray-900">Infrastructure Control Plane</h1>
           </div>
         </div>
       </header>
@@ -152,10 +164,21 @@ function App() {
       {/* Tabs Navigation */}
       <div className="bg-white border-b border-gray-200 shadow-sm">
         <div className="container mx-auto px-8">
-          <div className="flex">
+          <div className="flex overflow-x-auto">
+            <button
+              onClick={() => navigate('/')}
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'overview'
+                  ? 'text-slate-900 border-slate-900 bg-slate-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <LayoutDashboard className="w-5 h-5" />
+              Overview
+            </button>
             <button
               onClick={() => navigate('/list')}
-              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'list'
                   ? 'text-blue-600 border-blue-600 bg-blue-50'
                   : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
@@ -165,9 +188,9 @@ function App() {
               Instance List
             </button>
             <button
-              onClick={() => navigate('/')}
-              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
-                activeTab === 'create' || location.pathname === '/'
+              onClick={() => navigate('/create')}
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'create'
                   ? 'text-blue-600 border-blue-600 bg-blue-50'
                   : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
               }`}
@@ -177,7 +200,7 @@ function App() {
             </button>
             <button
               onClick={() => navigate('/tasks')}
-              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'tasks'
                   ? 'text-blue-600 border-blue-600 bg-blue-50'
                   : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
@@ -199,7 +222,7 @@ function App() {
             </button>
             <button
               onClick={() => navigate('/monitoring')}
-              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'monitoring'
                   ? 'text-blue-600 border-blue-600 bg-blue-50'
                   : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
@@ -210,9 +233,9 @@ function App() {
             </button>
             <button
               onClick={() => navigate('/assistant')}
-              className={`flex items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'assistant'
-                  ? 'text-purple-600 border-purple-600 bg-purple-50'
+                  ? 'text-orange-600 border-orange-600 bg-orange-50'
                   : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
               }`}
             >
@@ -226,6 +249,12 @@ function App() {
       {/* Main Content */}
       <main className="container mx-auto px-8 py-8">
         <Routes>
+          {/* Overview Route */}
+          <Route
+            path="/"
+            element={<OverviewDashboard onNavigate={navigate} />}
+          />
+
           {/* Instance List Route */}
           <Route
             path="/list"
@@ -270,9 +299,9 @@ function App() {
             }
           />
 
-          {/* Create Instance Route (Default) */}
+          {/* Create Instance Route */}
           <Route
-            path="/"
+            path="/create"
             element={
               <div className="max-w-5xl mx-auto space-y-6">
                 <div className="bg-white rounded-lg border border-gray-200 shadow-sm">
