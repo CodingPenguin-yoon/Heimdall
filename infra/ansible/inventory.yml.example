@@ -12,15 +12,15 @@ all:
     proxmox_vms:
       hosts:
         # 예제: Terraform으로 생성된 VM
-        # vm1:
-        #   ansible_host: 192.168.1.100
-        #   ansible_user: root
-        #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        # <vm-name-1>:
+        #   ansible_host: <vm-ip-or-dns>
+        #   ansible_user: <ssh-user>
+        #   ansible_ssh_private_key_file: ~/.ssh/<private-key>
         #
-        # vm2:
-        #   ansible_host: 192.168.1.101
-        #   ansible_user: ubuntu
-        #   ansible_ssh_private_key_file: ~/.ssh/id_rsa
+        # <vm-name-2>:
+        #   ansible_host: <vm-ip-or-dns>
+        #   ansible_user: <ssh-user>
+        #   ansible_ssh_private_key_file: ~/.ssh/<private-key>
       vars:
         # 공통 변수
         ansible_ssh_common_args: '-o StrictHostKeyChecking=no'

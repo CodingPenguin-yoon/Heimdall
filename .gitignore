@@ -22,6 +22,11 @@ infra/terraform/.state-migration-backups/
 .env.local
 .env.*.local
 
+# 로컬 Python 가상환경
+.venv/
+venv/
+*/venv/
+
 # SSH 키 파일
 *.pem
 *.key
@@ -47,6 +52,7 @@ Thumbs.db
 .project
 .classpath
 .settings/
+.ansible/
 
 # 로그 파일
 *.log
@@ -62,6 +68,22 @@ data/*.db-wal
 *.bak
 *.backup
 *.tmp
+
+# 문서 로컬 워크스페이스 상태
+docs/.obsidian/
+
+# Infra 로컬 운영값
+infra/**/inventory.yml
+infra/**/*.retry
+infra/**/.vault_pass
+infra/**/ansible.log
+infra/**/.terraform/
+infra/**/.terraform.lock.hcl
+infra/**/terraform.tfstate.d/
+infra/**/*.tfstate
+infra/**/*.tfstate.*
+infra/**/*.tfvars
+infra/**/*.tfvars.json
 
 # 기타
 *.zip
