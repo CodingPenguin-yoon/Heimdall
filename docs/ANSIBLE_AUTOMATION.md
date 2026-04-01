@@ -1,6 +1,7 @@
 # Ansible Automation
 
 현재 구현에서 Ansible 은 Terraform 뒤의 후처리 단계다.
+Heimdall 에서는 GitLab Workspace/control-plane 과 분리된 low-level VM engine 일부로 본다.
 
 기준 경로:
 
@@ -20,6 +21,7 @@ IP 를 얻지 못하면 Ansible 단계는 건너뛴다.
 ## inventory 생성
 
 동적 inventory 는 `infra/ansible/inventory.yml` 에 기록된다.
+여기서 말하는 inventory 는 VM 접속용 Ansible inventory 다. GitLab project inventory 와는 다른 개념이다.
 
 주요 값:
 
@@ -55,3 +57,5 @@ backend 는 아래 extra vars 를 넘긴다.
 - Node.js 설치 등 일부 역할은 외부 네트워크 의존성이 있다
 - inventory 파일은 고정 경로를 덮어쓰므로 동시 실행이 많아지면 파일 경합 여지가 있다
 - `ansible-playbook` CLI 는 backend 가 실행되는 로컬 환경에 설치돼 있어야 한다
+- 현재 SSH 공통 옵션에 `StrictHostKeyChecking=no` 가 들어가므로, 신뢰 가능한 내부망/테스트 환경 기준으로 운영하는 편이 안전하다
+- GitLab Workspace 의 bootstrap / Deploy Staging 은 아직 여기로 연결되지 않는다. 현재 Ansible 은 VM 생성 직후 후처리까지만 담당한다

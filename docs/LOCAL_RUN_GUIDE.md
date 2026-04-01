@@ -25,7 +25,7 @@
 - 필요 시 `IP_POOL_*`
 - 필요 시 `GEMINI_*`
 
-GitLab 탭과 다음 단계 GitLab inventory 준비용으로 아래도 미리 넣어둘 수 있다.
+GitLab Workspace, inventory sync, project 생성, system hook 연동을 쓸 때만 아래를 추가한다.
 
 - `GITLAB_BASE_URL`
 - `GITLAB_API_TOKEN`
@@ -84,8 +84,15 @@ pnpm dev
 2. 프론트 열기
 3. 서버/템플릿 목록 확인
 4. Task Board 진입 확인
+5. 선택 사항: GitLab Workspace 탭에서 inventory 조회 또는 수동 sync 확인
+
+GitLab System Hook 까지 확인하려면 GitLab 에서 backend 의 `POST /api/webhooks/gitlab/system` 을 등록하고,
+`X-Gitlab-Token` 에 `GITLAB_SYSTEM_HOOK_SECRET` 과 같은 값을 넣어야 한다.
 
 ## 7. VM 준비 조건
+
+이 섹션은 Heimdall 의 low-level VM engine 조건이다. GitLab Workspace 와 별개로,
+실제 VM 배포/후처리는 여전히 Proxmox + Terraform + Ansible 경로를 사용한다.
 
 - Proxmox 쪽에 clone 가능한 템플릿이 있어야 한다
 - 템플릿에 cloud-init 이 동작해야 한다
@@ -95,6 +102,16 @@ pnpm dev
   - 예: `192.168.2.120/24`
 
 ## 8. 자주 막히는 지점
+
+### GitLab Workspace 가 비어 있거나 sync 가 비활성화된 경우
+
+대개 `GITLAB_BASE_URL` 또는 `GITLAB_API_TOKEN` 이 비어 있거나 형식이 맞지 않은 경우다.
+
+### GitLab System Hook 이 403 또는 503 으로 실패하는 경우
+
+- `GITLAB_SYSTEM_HOOK_SECRET` 과 GitLab hook token 값이 일치하는지 확인한다
+- 외부 GitLab 이 접근할 수 있는 `PLATFORM_PUBLIC_BASE_URL` 과 ingress 경로가 맞는지 확인한다
+- bootstrap / Deploy Staging 실행 기능은 아직 없으므로 hook 은 inventory 반영까지만 담당한다
 
 ### `terraform` 또는 `ansible-playbook` 미설치
 
@@ -117,3 +134,10 @@ cd backend
 . venv/bin/activate
 alembic upgrade head
 ```
+
+## 9. 안전한 `.env` 운영 메모
+
+- `.env` 는 커밋하지 않는다
+- `GITLAB_API_TOKEN` 은 API 접근에 필요한 최소 권한만 준다
+- `PROXMOX_TLS_INSECURE=true` 나 `GITLAB_VERIFY_SSL=false` 는 격리된 테스트 환경에서만 임시로 쓴다
+- `ANSIBLE_SSH_PRIVATE_KEY_FILE` 은 절대경로를 사용하고 권한을 제한한다

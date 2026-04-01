@@ -42,6 +42,23 @@ function storageUsagePercent(node) {
   return storages.reduce((max, storage) => Math.max(max, toPercent(storage?.usage_percent)), 0)
 }
 
+function getNodeStorages(node) {
+  const storages = Array.isArray(node?.storages) ? node.storages : []
+  return [...storages].sort((left, right) => {
+    const leftLabel = String(left?.name || left?.storage_name || left?.storage_id || '')
+    const rightLabel = String(right?.name || right?.storage_name || right?.storage_id || '')
+    return leftLabel.localeCompare(rightLabel, undefined, { numeric: true, sensitivity: 'base' })
+  })
+}
+
+function getStorageLabel(storage, index) {
+  return storage?.name || storage?.storage_name || storage?.storage_id || `Storage ${index + 1}`
+}
+
+function getStorageKey(node, storage, index) {
+  return storage?.storage_id || storage?.id || `${node?.node || node?.name || 'node'}-${getStorageLabel(storage, index)}-${index}`
+}
+
 function getNodeHealth(node) {
   if (node?.status !== 'online') {
     return {
@@ -144,7 +161,7 @@ function MiniMeter({ label, value, toneClass }) {
   return (
     <div>
       <div className="mb-1.5 flex items-center justify-between text-xs text-slate-500">
-        <span>{label}</span>
+        <span className="min-w-0 truncate pr-2">{label}</span>
         <span className="font-semibold text-slate-700">{value.toFixed(0)}%</span>
       </div>
       <div className="h-2 rounded-full bg-slate-100">
@@ -517,40 +534,57 @@ function OverviewDashboard({ onNavigate }) {
               </button>
             </div>
             <div className="mt-5 grid gap-4 lg:grid-cols-2">
-              {derived.nodeHealth.map(({ node, health }) => (
-                <div key={node.node || node.name} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                  <div className="flex items-start justify-between gap-4">
-                    <div>
-                      <div className="text-sm font-semibold text-slate-900">{node.name || node.node}</div>
-                      <div className="mt-1 text-xs text-slate-500">
-                        Uptime {typeof node.uptime === 'number' ? `${Math.floor(node.uptime / 3600)}h` : '-'}
+              {derived.nodeHealth.map(({ node, health }) => {
+                const storages = getNodeStorages(node)
+
+                return (
+                  <div key={node.node || node.name} className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold text-slate-900">{node.name || node.node}</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Uptime {typeof node.uptime === 'number' ? `${Math.floor(node.uptime / 3600)}h` : '-'}
+                        </div>
                       </div>
+                      <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricToneClass(health.tone)}`}>
+                        {health.label}
+                      </span>
                     </div>
-                    <span className={`rounded-full border px-2.5 py-1 text-xs font-semibold ${metricToneClass(health.tone)}`}>
-                      {health.label}
-                    </span>
+                    <div className="mt-4 space-y-3">
+                      <MiniMeter label="CPU" value={health.cpu} toneClass="bg-sky-500" />
+                      <MiniMeter label="Memory" value={health.memory} toneClass="bg-emerald-500" />
+                      {storages.length > 0 ? (
+                        <div className="space-y-2">
+                          {storages.map((storage, index) => (
+                            <MiniMeter
+                              key={getStorageKey(node, storage, index)}
+                              label={getStorageLabel(storage, index)}
+                              value={toPercent(storage?.usage_percent)}
+                              toneClass="bg-amber-500"
+                            />
+                          ))}
+                        </div>
+                      ) : (
+                        <MiniMeter label="Storage" value={health.storage} toneClass="bg-amber-500" />
+                      )}
+                    </div>
+                    <div className="mt-4 flex items-center gap-4 text-xs text-slate-500">
+                      <span className="inline-flex items-center gap-1">
+                        <Cpu className="h-3.5 w-3.5" />
+                        CPU
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <Activity className="h-3.5 w-3.5" />
+                        Memory
+                      </span>
+                      <span className="inline-flex items-center gap-1">
+                        <HardDrive className="h-3.5 w-3.5" />
+                        Storage
+                      </span>
+                    </div>
                   </div>
-                  <div className="mt-4 space-y-3">
-                    <MiniMeter label="CPU" value={health.cpu} toneClass="bg-sky-500" />
-                    <MiniMeter label="Memory" value={health.memory} toneClass="bg-emerald-500" />
-                    <MiniMeter label="Storage" value={health.storage} toneClass="bg-amber-500" />
-                  </div>
-                  <div className="mt-4 flex items-center gap-4 text-xs text-slate-500">
-                    <span className="inline-flex items-center gap-1">
-                      <Cpu className="h-3.5 w-3.5" />
-                      CPU
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <Activity className="h-3.5 w-3.5" />
-                      Memory
-                    </span>
-                    <span className="inline-flex items-center gap-1">
-                      <HardDrive className="h-3.5 w-3.5" />
-                      Storage
-                    </span>
-                  </div>
-                </div>
-              ))}
+                )
+              })}
 
               {!loading && derived.nodeHealth.length === 0 && (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-12 text-center text-sm text-slate-500 lg:col-span-2">

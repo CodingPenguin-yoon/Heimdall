@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
 from app.domains.gitlab.service import (
@@ -34,6 +34,8 @@ class GitLabProjectResponse(BaseModel):
     last_activity_at: str | None = None
     synced_at: str
     configuration_status: str
+    manifest_status: str
+    manifest_summary: str
     settings_summary: dict[str, Any] | None = None
 
 
@@ -81,6 +83,8 @@ class GitLabProjectCreateResponse(BaseModel):
 class GitLabProjectSettingsResponse(BaseModel):
     gitlab_project_id: int
     configuration_status: str
+    manifest_status: str
+    manifest_summary: str
     staging_enabled: bool
     ready_for_bootstrap: bool
     database_required: bool
@@ -104,6 +108,13 @@ class GitLabProjectSettingsUpdateRequest(BaseModel):
     deploy_branch: str = "main"
     bootstrap_strategy: str = "merge_request"
     notes: str | None = None
+
+
+class GitLabDeployRequestResponse(BaseModel):
+    task_id: str
+    message: str
+    status: str
+    already_exists: bool
 
 
 @router.get("/gitlab/projects", response_model=GitLabProjectsListResponse)
@@ -151,6 +162,25 @@ async def update_gitlab_project_settings(
     try:
         return GitLabProjectSettingsResponse(
             **gitlab_inventory_service.upsert_project_settings(project_id, payload.model_dump())
+        )
+    except GitLabProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GitLabProjectSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/gitlab/projects/{project_id}/deploy/staging",
+    response_model=GitLabDeployRequestResponse,
+    status_code=202,
+)
+async def request_gitlab_project_staging_deploy(
+    project_id: int,
+    background_tasks: BackgroundTasks,
+) -> GitLabDeployRequestResponse:
+    try:
+        return GitLabDeployRequestResponse(
+            **gitlab_inventory_service.request_staging_deploy(project_id, background_tasks)
         )
     except GitLabProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

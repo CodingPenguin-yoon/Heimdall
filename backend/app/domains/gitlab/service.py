@@ -3,21 +3,26 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from uuid import uuid4
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
 import requests
+import yaml
+from fastapi import BackgroundTasks
 from sqlalchemy import select
 
 from app.shared.gitlab_settings import GitLabSettings, get_gitlab_settings
 from app.shared.platform_db import create_platform_engine, create_session_factory
 from app.shared.platform_models import GitLabProject, GitLabProjectSettings, PlatformMetadata
+from app.shared.tasks import TaskStatus, task_manager
 
 
 GITLAB_SYNC_METADATA_KEY = "gitlab_projects_sync"
 ALLOWED_DATABASE_ENGINES = {"postgres"}
 ALLOWED_DATABASE_MODES = {"shared-cluster", "dedicated-instance"}
 ALLOWED_BOOTSTRAP_STRATEGIES = {"merge_request", "direct_commit", "manual"}
+MANIFEST_FILE_PATH = ".heimdall/project.yaml"
 
 
 class GitLabConfigurationError(RuntimeError):
@@ -49,6 +54,7 @@ class GitLabInventoryService:
 
     def list_projects(self) -> dict[str, Any]:
         settings = get_gitlab_settings()
+        manifest_context = self._create_manifest_lookup_context(settings)
         with self._session_factory() as session:
             projects = list(
                 session.execute(
@@ -73,6 +79,7 @@ class GitLabInventoryService:
                     self._serialize_project(
                         project=project,
                         project_settings=settings_by_project_id.get(project.gitlab_project_id),
+                        manifest_context=manifest_context,
                     )
                     for project in projects
                 ],
@@ -81,6 +88,8 @@ class GitLabInventoryService:
 
     def get_project_settings(self, project_id: int) -> dict[str, Any]:
         project_id = self._coerce_project_id(project_id)
+        settings = get_gitlab_settings()
+        manifest_context = self._create_manifest_lookup_context(settings)
 
         with self._session_factory() as session:
             project = session.get(GitLabProject, project_id)
@@ -89,8 +98,10 @@ class GitLabInventoryService:
 
             project_settings = session.get(GitLabProjectSettings, project_id)
             return self._serialize_project_settings_detail(
+                project=project,
                 project_id=project_id,
                 project_settings=project_settings,
+                manifest_context=manifest_context,
             )
 
     def upsert_project_settings(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
@@ -120,10 +131,17 @@ class GitLabInventoryService:
             project_settings.updated_at = now
 
         with self._session_factory() as session:
+            settings = get_gitlab_settings()
+            manifest_context = self._create_manifest_lookup_context(settings)
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
             persisted_settings = session.get(GitLabProjectSettings, project_id)
             return self._serialize_project_settings_detail(
+                project=project,
                 project_id=project_id,
                 project_settings=persisted_settings,
+                manifest_context=manifest_context,
             )
 
     def sync_projects(self) -> dict[str, Any]:
@@ -239,7 +257,91 @@ class GitLabInventoryService:
             )
 
         return {
-            "project": self._serialize_project(project=record, project_settings=None)
+            "project": self._serialize_project(
+                project=record,
+                project_settings=None,
+                manifest_context=self._create_manifest_lookup_context(settings),
+            )
+        }
+
+    def request_staging_deploy(
+        self,
+        project_id: int,
+        background_tasks: BackgroundTasks,
+    ) -> dict[str, Any]:
+        project_id = self._coerce_project_id(project_id)
+
+        with self._session_factory() as session:
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
+            if project.archived:
+                raise GitLabProjectSettingsError("Archived projects cannot request staging deploys.")
+
+            project_settings = session.get(GitLabProjectSettings, project_id)
+            if project_settings is None:
+                raise GitLabProjectSettingsError(
+                    "Project settings must exist before requesting a staging deploy."
+                )
+            if not project_settings.staging_enabled:
+                raise GitLabProjectSettingsError(
+                    "staging_enabled must be true before requesting a staging deploy."
+                )
+            if not project_settings.ready_for_bootstrap:
+                raise GitLabProjectSettingsError(
+                    "ready_for_bootstrap must be true before requesting a staging deploy."
+                )
+
+            manifest = self._load_project_manifest_status(
+                project=project,
+                manifest_context=self._create_manifest_lookup_context(get_gitlab_settings()),
+            )
+            if manifest["manifest_status"] != "valid":
+                raise GitLabProjectSettingsError(
+                    f"Staging deploy requires a valid {MANIFEST_FILE_PATH}: "
+                    f"{manifest['manifest_summary']}"
+                )
+
+            duplicate_task = self._find_live_staging_request(project_id)
+            if duplicate_task is not None:
+                return {
+                    "task_id": str(duplicate_task.get("task_id")),
+                    "message": "이미 진행 중인 staging deploy 요청이 있습니다. Task Board에서 상태를 확인하세요.",
+                    "status": str(duplicate_task.get("status") or "pending").lower(),
+                    "already_exists": True,
+                }
+
+            task_id = f"gitlab-staging-deploy-{project_id}-{uuid4().hex[:8]}"
+            task_metadata = {
+                "action": "gitlab_staging_deploy",
+                "environment": "staging",
+                "trigger_source": "user",
+                "gitlab_project_id": project.gitlab_project_id,
+                "path_with_namespace": project.path_with_namespace,
+                "deploy_branch": project_settings.deploy_branch,
+                "note": (
+                    "Manual staging deploy request recorded only. "
+                    "This MVP slice does not execute VM or DB orchestration yet."
+                ),
+            }
+            task_manager.create_task(task_id, metadata=task_metadata)
+            task_manager.update_status(task_id, TaskStatus.PENDING)
+
+        background_tasks.add_task(
+            self._record_staging_deploy_request,
+            task_id,
+            {
+                "project_id": project_id,
+                "path_with_namespace": project.path_with_namespace,
+                "deploy_branch": project_settings.deploy_branch,
+            },
+        )
+
+        return {
+            "task_id": task_id,
+            "message": "Staging deploy 요청이 기록되었습니다. Task Board에서 진행 상태를 확인하세요.",
+            "status": "pending",
+            "already_exists": False,
         }
 
     def _validate_sync_settings(self, settings: GitLabSettings) -> None:
@@ -247,6 +349,79 @@ class GitLabInventoryService:
             raise GitLabConfigurationError(settings.validation_error)
         if not settings.api_token:
             raise GitLabConfigurationError("GITLAB_API_TOKEN is not configured.")
+
+    def _find_live_staging_request(self, project_id: int) -> dict[str, Any] | None:
+        tasks = task_manager.list_tasks(limit=1000, include_archived=True)
+        for task in tasks:
+            metadata = task.get("metadata") or {}
+            if not isinstance(metadata, dict):
+                continue
+            if metadata.get("action") != "gitlab_staging_deploy":
+                continue
+            if metadata.get("environment") != "staging":
+                continue
+            metadata_project_id = metadata.get("gitlab_project_id")
+            try:
+                if int(metadata_project_id) != project_id:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            if task.get("status") not in {TaskStatus.PENDING.value, TaskStatus.RUNNING.value}:
+                continue
+            return task
+        return None
+
+    def _record_staging_deploy_request(self, task_id: str, context: dict[str, Any]) -> None:
+        try:
+            task_manager.update_status(task_id, TaskStatus.RUNNING)
+            task_manager.update_progress(
+                task_id,
+                10.0,
+                text="Manual staging deploy request received",
+                source="phase",
+            )
+            task_manager.append_log(task_id, "=== Staging deploy request recording 시작 ===")
+            task_manager.append_log(
+                task_id,
+                f"대상 프로젝트: {context['path_with_namespace']} (GitLab project ID: {context['project_id']})",
+            )
+            task_manager.append_log(task_id, f"배포 브랜치: {context['deploy_branch']}")
+            task_manager.append_log(
+                task_id,
+                "이 작업은 수동 staging deploy 요청만 기록합니다. 실제 VM/DB 실행은 아직 연결되지 않았습니다.",
+            )
+            task_manager.update_progress(
+                task_id,
+                65.0,
+                text="Request recorded without infra execution",
+                source="phase",
+            )
+            task_manager.update_metadata(
+                task_id,
+                {
+                    "request_recorded_at": self._now_iso(),
+                    "execution_mode": "request_record_only",
+                    "infra_execution": "not_started",
+                },
+            )
+            task_manager.append_log(
+                task_id,
+                "실제 Terraform, Ansible, VM, DB 오케스트레이션은 수행하지 않고 Task Board 추적 정보만 남깁니다.",
+            )
+            task_manager.update_progress(
+                task_id,
+                100.0,
+                text="Request recorded",
+                source="phase",
+            )
+            task_manager.update_status(task_id, TaskStatus.SUCCESS)
+            task_manager.append_log(task_id, "=== Staging deploy request recording 완료 ===")
+        except Exception as exc:
+            task_manager.update_status(task_id, TaskStatus.FAILED)
+            task_manager.append_log(
+                task_id,
+                f"Staging deploy request recording 실패: {exc}",
+            )
 
     def _fetch_projects(self, settings: GitLabSettings) -> list[dict[str, Any]]:
         session = self._create_gitlab_session(settings)
@@ -491,7 +666,9 @@ class GitLabInventoryService:
         self,
         project: GitLabProject,
         project_settings: GitLabProjectSettings | None,
+        manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
+        manifest = self._load_project_manifest_status(project=project, manifest_context=manifest_context)
         return {
             "gitlab_project_id": project.gitlab_project_id,
             "name": project.name,
@@ -505,6 +682,8 @@ class GitLabInventoryService:
             "last_activity_at": project.last_activity_at,
             "synced_at": project.synced_at,
             "configuration_status": self._derive_configuration_status(project_settings),
+            "manifest_status": manifest["manifest_status"],
+            "manifest_summary": manifest["manifest_summary"],
             "settings_summary": self._serialize_project_settings_summary(project_settings),
         }
 
@@ -529,13 +708,18 @@ class GitLabInventoryService:
 
     def _serialize_project_settings_detail(
         self,
+        project: GitLabProject,
         project_id: int,
         project_settings: GitLabProjectSettings | None,
+        manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
         summary = self._serialize_project_settings_summary(project_settings)
+        manifest = self._load_project_manifest_status(project=project, manifest_context=manifest_context)
         return {
             "gitlab_project_id": project_id,
             "configuration_status": self._derive_configuration_status(project_settings),
+            "manifest_status": manifest["manifest_status"],
+            "manifest_summary": manifest["manifest_summary"],
             "staging_enabled": project_settings.staging_enabled if project_settings is not None else False,
             "ready_for_bootstrap": project_settings.ready_for_bootstrap if project_settings is not None else False,
             "database_required": project_settings.database_required if project_settings is not None else False,
@@ -558,6 +742,114 @@ class GitLabInventoryService:
         if project_settings.ready_for_bootstrap:
             return "ready_for_bootstrap"
         return "configured"
+
+    def _create_manifest_lookup_context(self, settings: GitLabSettings) -> dict[str, Any]:
+        if settings.validation_error is not None:
+            return {
+                "available": False,
+                "error": f"GitLab configuration unavailable: {settings.validation_error}",
+            }
+        if not settings.api_token:
+            return {
+                "available": False,
+                "error": "GitLab configuration unavailable: GITLAB_API_TOKEN is not configured.",
+            }
+
+        return {
+            "available": True,
+            "settings": settings,
+            "session": self._create_gitlab_session(settings),
+        }
+
+    def _load_project_manifest_status(
+        self,
+        project: GitLabProject,
+        manifest_context: dict[str, Any],
+    ) -> dict[str, str]:
+        if not manifest_context.get("available"):
+            return {
+                "manifest_status": "unchecked",
+                "manifest_summary": str(
+                    manifest_context.get("error") or "GitLab manifest validation is unavailable."
+                ),
+            }
+
+        settings = manifest_context["settings"]
+        session = manifest_context["session"]
+        encoded_path = quote(MANIFEST_FILE_PATH, safe="")
+        ref = str(project.default_branch or "HEAD")
+        url = urljoin(
+            f"{settings.base_url}/",
+            f"api/v4/projects/{project.gitlab_project_id}/repository/files/{encoded_path}/raw",
+        )
+
+        try:
+            response = session.request(
+                method="GET",
+                url=url,
+                params={"ref": ref},
+                timeout=(5, 30),
+                verify=settings.verify_ssl,
+            )
+            if response.status_code == 404:
+                return {
+                    "manifest_status": "missing",
+                    "manifest_summary": f"{MANIFEST_FILE_PATH} was not found on ref {ref}.",
+                }
+            response.raise_for_status()
+        except requests.RequestException as exc:
+            return {
+                "manifest_status": "unchecked",
+                "manifest_summary": self._map_gitlab_request_error(exc),
+            }
+
+        try:
+            payload = yaml.safe_load(response.text)
+        except yaml.YAMLError as exc:
+            return {
+                "manifest_status": "invalid",
+                "manifest_summary": f"{MANIFEST_FILE_PATH} YAML parse error: {exc}",
+            }
+
+        validation_error = self._validate_manifest_payload(payload)
+        if validation_error is not None:
+            return {
+                "manifest_status": "invalid",
+                "manifest_summary": validation_error,
+            }
+
+        return {
+            "manifest_status": "valid",
+            "manifest_summary": f"{MANIFEST_FILE_PATH} passed the minimum staging validation on ref {ref}.",
+        }
+
+    def _validate_manifest_payload(self, payload: Any) -> str | None:
+        if not isinstance(payload, dict):
+            return f"{MANIFEST_FILE_PATH} must contain a YAML object."
+
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            return "Manifest validation failed: top-level name must be a non-empty string."
+
+        runtime = payload.get("runtime")
+        if not isinstance(runtime, str) or not runtime.strip():
+            return "Manifest validation failed: top-level runtime must be a non-empty string."
+
+        deploy = payload.get("deploy")
+        if not isinstance(deploy, dict) or deploy.get("strategy") != "docker-compose":
+            return "Manifest validation failed: deploy.strategy must be docker-compose."
+
+        environments = payload.get("environments")
+        staging = environments.get("staging") if isinstance(environments, dict) else None
+        if not isinstance(staging, dict) or staging.get("enabled") is not True:
+            return "Manifest validation failed: environments.staging.enabled must be true."
+
+        database = payload.get("database")
+        if isinstance(database, dict) and database.get("required") is True:
+            if database.get("engine") != "postgres":
+                return "Manifest validation failed: database.engine must be postgres when database.required is true."
+
+        return None
 
     def _upsert_project_record(
         self,

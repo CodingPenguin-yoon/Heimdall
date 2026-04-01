@@ -1,241 +1,179 @@
 # Project Manifest Specification
 
-이 문서는 GitLab 프로젝트를 이 플랫폼에 자동 온보딩하기 위한 최소 선언형 파일 형식을 정의한다.
+이 문서는 Heimdall 프로젝트 계약과 현재 런타임에서 실제로 강제되는 최소 검증 범위를 함께 정의한다.
 
-권장 경로:
+중요:
 
-- `.argus/project.yaml`
+- 대상 경로는 `.heimdall/project.yaml`
+- `.heimdall/project.yaml` 최소 검증은 현재 GitLab inventory/settings/deploy request 경로에서 런타임으로 적용된다
+- bootstrap 초안 생성과 full deployment contract 는 아직 future work 이다
 
-목적:
+관련 문서:
 
-- 프로젝트가 어떤 종류의 서비스인지
-- 어떤 환경이 필요한지
-- 어떤 DB 가 필요한지
-- 파이프라인이 어떤 방식으로 배포되어야 하는지
+- [00_PLATFORM_DESIGN_SUMMARY.md](00_PLATFORM_DESIGN_SUMMARY.md)
+- [02_IMPLEMENTATION_ROADMAP.md](02_IMPLEMENTATION_ROADMAP.md)
+- [04_MVP_PHASE_PLAN.md](04_MVP_PHASE_PLAN.md)
 
-를 플랫폼이 자동 판단할 수 있게 하는 것이다.
+## Contract Intent
 
-## 1. 설계 원칙
+`.heimdall/project.yaml` 의 목적은 아래를 최소 범위로 선언하게 하는 것이다.
 
-- 저장소 안에 있어야 한다.
-- 사람이 읽고 수정하기 쉬워야 한다.
-- 플랫폼이 안전하게 검증할 수 있어야 한다.
-- 프로젝트별 커스텀 로직보다 선언형 설정을 우선한다.
+- 이 프로젝트가 staging 배포 대상인지
+- `docker-compose` 로 배포 가능한지
+- Postgres 자동 연결이 필요한지
+- merge-request bootstrap 이 어떤 초안을 생성해야 하는지
 
-## 2. 최소 스키마
+이번 계획 계약은 의도적으로 좁다.
+
+- 환경은 `staging` 기준으로 시작한다
+- 배포 전략은 `docker-compose` 만 다룬다
+- DB 엔진은 `postgres` 만 다룬다
+
+## Path
+
+- `.heimdall/project.yaml`
+
+bootstrap 단계에서는 플랫폼이 이 파일의 초안을 merge request 로 제안하는 방향을 기본값으로 둔다.
+이 파일의 존재, 초안 생성, 검증 통과는 staging 배포 적격성/준비 상태만 뜻하며 실제 staging 배포를 자동 시작하지 않는다. 실제 시작은 명시적 사용자 `Deploy Staging` 액션에서만 가능하다.
+
+## Minimum Schema
 
 ```yaml
 name: billing-api
-project_type: webapp
 runtime: node
-
-build:
-  command: npm ci && npm run build
-
-deploy:
-  strategy: docker-compose
-  app_port: 3000
-  healthcheck_path: /health
-
-database:
-  required: true
-  engine: postgres
-  mode: shared-cluster
-
-environment_defaults:
-  staging:
-    blueprint: web-small
-  production:
-    blueprint: web-medium
-```
-
-## 3. 필드 정의
-
-### 3.1 Top-level
-
-- `name`
-  - 사람이 읽는 프로젝트 이름
-  - GitLab 프로젝트 이름과 달라도 되지만 가능하면 맞춘다
-
-- `project_type`
-  - 예: `webapp`, `worker`, `api`, `cron`
-
-- `runtime`
-  - 예: `node`, `python`, `java`, `go`
-
-### 3.2 `build`
-
-- `command`
-  - 기본 빌드 명령
-- `artifact_path`
-  - 선택
-  - 정적 파일/압축물/이미지 메타데이터 위치
-
-### 3.3 `deploy`
-
-- `strategy`
-  - `docker-compose`
-  - `systemd`
-  - `static-files`
-  - `custom-script`
-
-- `app_port`
-  - 앱이 리슨하는 포트
-
-- `healthcheck_path`
-  - 서비스 정상 여부를 판단할 경로
-
-- `start_command`
-  - 선택
-  - custom/script 계열일 때 사용
-
-### 3.4 `database`
-
-- `required`
-  - `true` 또는 `false`
-
-- `engine`
-  - `postgres`
-  - `mysql`
-  - `redis`
-  - 초기 MVP 는 `postgres` 만 허용하는 것이 안전하다
-
-- `mode`
-  - `shared-cluster`
-  - `dedicated-instance`
-
-- `migration_command`
-  - 선택
-  - 예: `npm run migrate`, `alembic upgrade head`
-
-### 3.5 `environment_defaults`
-
-환경별 기본 blueprint 를 지정한다.
-
-예:
-
-```yaml
-environment_defaults:
-  development:
-    blueprint: web-dev
-  staging:
-    blueprint: web-small
-  production:
-    blueprint: web-medium
-```
-
-## 4. 확장 필드
-
-필요하면 아래 필드를 확장할 수 있다.
-
-```yaml
-env:
-  required:
-    - JWT_SECRET
-    - APP_BASE_URL
-  generated:
-    - DATABASE_URL
-
-network:
-  public: true
-  domain_template: "{env}.{project}.example.com"
 
 deploy:
   strategy: docker-compose
   compose_file: deploy/docker-compose.yml
-
-runner:
-  tags:
-    - build-shared
-    - deploy-staging
-```
-
-## 5. 검증 규칙
-
-플랫폼은 bootstrap 전에 아래를 검증해야 한다.
-
-- `project_type` 유효성
-- `runtime` 지원 여부
-- `deploy.strategy` 지원 여부
-- DB 설정과 blueprint 호환성
-- 필수 env 이름 충돌 여부
-- healthcheck 경로 형식
-
-검증 실패 시:
-
-- 프로젝트는 read-only 인벤토리 상태로만 남긴다
-- 자동 배포 버튼은 비활성화한다
-
-## 6. 예시
-
-### 6.1 Node.js API
-
-```yaml
-name: billing-api
-project_type: api
-runtime: node
-
-build:
-  command: npm ci && npm run build
-
-deploy:
-  strategy: docker-compose
   app_port: 3000
   healthcheck_path: /health
 
 database:
   required: true
   engine: postgres
-  mode: shared-cluster
-  migration_command: npm run migrate
+  connection_env: DATABASE_URL
 
-environment_defaults:
+environments:
   staging:
-    blueprint: web-small
-  production:
-    blueprint: web-medium
+    enabled: true
 ```
 
-### 6.2 Python Worker
+## Field Definitions
+
+### Top-Level
+
+- `name`
+  - 사람이 읽는 프로젝트 식별자
+
+- `runtime`
+  - bootstrap 과 검증에 참고하는 런타임 힌트
+  - 예: `node`, `python`, `go`
+
+### `deploy`
+
+- `strategy`
+  - MVP 계획 계약에서는 `docker-compose` 만 허용
+
+- `compose_file`
+  - 저장소 내 compose 파일 위치
+
+- `app_port`
+  - 앱 서비스가 수신하는 내부 포트
+
+- `healthcheck_path`
+  - staging 검증에 쓰는 HTTP 경로
+
+### `database`
+
+- `required`
+  - Postgres 자동 연결 필요 여부
+
+- `engine`
+  - MVP 계획 계약에서는 `postgres` 만 허용
+
+- `connection_env`
+  - 앱이 받을 연결 문자열 환경변수 이름
+  - 기본값 후보는 `DATABASE_URL`
+
+### `environments`
+
+- `staging.enabled`
+  - MVP 대상 여부를 명시
+
+production 관련 선언은 향후 확장 대상으로 남기되, 이번 계획 계약의 필수 요소에 넣지 않는다.
+
+## Runtime-Enforced Minimum Validation
+
+현재 백엔드는 GitLab Repository Files raw API 로 프로젝트의 기본 브랜치가 있으면 그 브랜치, 없으면 `HEAD` 에서 `.heimdall/project.yaml` 을 읽고 아래 최소 규칙만 검사한다.
+
+- top-level `name` 이 비어 있지 않은 문자열인가
+- top-level `runtime` 이 비어 있지 않은 문자열인가
+- `deploy.strategy == docker-compose` 인가
+- `environments.staging.enabled == true` 인가
+- `database.required == true` 이면 `database.engine == postgres` 인가
+
+현재 단계에서는 아래는 아직 검사하지 않는다.
+
+- compose 파일 실제 존재 여부
+- bootstrap MR 생성 가능 여부
+- full staging/prod deployment 계약 전체
+
+검증 상태는 `valid`, `missing`, `invalid`, `unchecked` 로 노출된다.
+
+- `valid`: 최소 규칙을 통과함
+- `missing`: `.heimdall/project.yaml` 파일이 없음
+- `invalid`: 파일은 있지만 최소 스키마를 통과하지 못함
+- `unchecked`: GitLab 설정 불가 또는 404 이외 API 오류로 이번 확인을 완료하지 못함
+
+## Future Validation Work
+
+bootstrap 또는 staging 준비 단계에서 아래를 추가 검증하는 방향을 유지한다.
+
+- `.heimdall/project.yaml` 이 존재하거나 MR 초안 생성이 가능한가
+- `deploy.strategy` 가 `docker-compose` 인가
+- `deploy.compose_file` 이 저장소 경로로 해석 가능한가
+- `database.engine` 이 필요한 경우 `postgres` 인가
+- `environments.staging.enabled` 가 `true` 인가
+- `connection_env` 이름이 배포 입력과 충돌하지 않는가
+
+위 검증은 staging 배포 준비 여부를 판정하기 위한 것이며, discovery, inventory sync, `System Hook`, bootstrap readiness 와 마찬가지로 자동 배포 트리거가 아니다.
+
+검증 실패 시 예상 동작:
+
+- inventory 에는 남긴다
+- staging 자동화 대상에서는 제외한다
+- 수정 가능한 bootstrap MR 또는 검토 액션으로 되돌린다
+
+## Example
 
 ```yaml
-name: report-worker
-project_type: worker
-runtime: python
-
-build:
-  command: pip install -r requirements.txt
+name: billing-api
+runtime: node
 
 deploy:
-  strategy: systemd
-  start_command: python -m app.worker
+  strategy: docker-compose
+  compose_file: deploy/docker-compose.yml
+  app_port: 3000
+  healthcheck_path: /health
 
 database:
-  required: false
+  required: true
+  engine: postgres
+  connection_env: DATABASE_URL
 
-environment_defaults:
+environments:
   staging:
-    blueprint: worker-small
+    enabled: true
 ```
 
-## 7. 권장 Bootstrap 동작
+## Out Of Scope For The Current Slice
 
-프로젝트에 이 파일이 없으면 플랫폼은 다음 중 하나를 해야 한다.
+아래는 이번 문서에서 정의하지 않는다.
 
-1. 샘플 manifest 를 생성해 커밋
-2. merge request 로 초안 제안
-3. 웹 UI 에서 manifest 생성 마법사 제공
+- `systemd`, `static-files`, `custom-script` 같은 다른 배포 전략
+- `mysql`, `redis` 같은 다른 엔진
+- production 환경 필수 스키마
+- reverse proxy / domain / TLS 설정
+- edge 라우팅 정책
 
-운영 안정성을 생각하면, 직접 main 브랜치에 밀어넣는 것보다 merge request 로 제안하는 편이 더 안전하다.
-
-## 8. 비목표
-
-이 manifest 는 Helm chart 나 Terraform module 전체를 대체하려는 것이 아니다.
-
-목적은 오직:
-
-- 플랫폼이 프로젝트를 식별하고
-- 환경에 맞는 자동화 결정을 하고
-- GitLab pipeline 과 인프라 연결을 일관되게 수행하는 것
-
-에 있다.
+위 항목은 나중에 확장할 수 있지만, 지금 이 문서에 넣으면 MVP 계약이 다시 흐려진다.

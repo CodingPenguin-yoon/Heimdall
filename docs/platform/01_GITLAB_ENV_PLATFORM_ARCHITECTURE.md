@@ -1,87 +1,93 @@
 # GitLab Environment Platform Architecture
 
-이 문서는 현재 VM 자동화 기반을 GitLab 중심 환경 플랫폼으로 확장할 때의 목표 구조를 정리한다.
+이 문서는 Heimdall MVP 를 기준으로 GitLab 중심 환경 플랫폼 구조를 다시 좁혀 설명한다.
 
-## 목표 흐름
+관련 문서:
 
-1. 개발자가 GitLab 에서 프로젝트 생성
-2. 플랫폼이 프로젝트를 감지해 목록에 표시
-3. 사용자가 프로젝트/환경 설정
-4. 사용자가 `Deploy Staging` 실행
-5. 플랫폼이 VM + DB + secret + pipeline 을 오케스트레이션
+- [00_PLATFORM_DESIGN_SUMMARY.md](00_PLATFORM_DESIGN_SUMMARY.md)
+- [02_IMPLEMENTATION_ROADMAP.md](02_IMPLEMENTATION_ROADMAP.md)
+- [03_PROJECT_MANIFEST_SPEC.md](03_PROJECT_MANIFEST_SPEC.md)
 
-즉 `프로젝트 생성 = 즉시 배포`가 아니라, 감지 -> 설정 -> 배포 순서다.
+## Architectural Intent
 
-## 현재 코드에서 재사용할 자산
+이번 아키텍처의 목적은 “staging-first 개발자 배포 경로”를 만드는 것이다.
 
-- `backend/app/domains/proxmox/service.py`
-- `backend/app/domains/deploy/service.py`
-- `backend/app/integrations/terraform/__init__.py`
-- `backend/app/integrations/ansible/__init__.py`
-- `backend/app/shared/tasks.py`
-- `backend/app/shared/platform_models.py`
-- `frontend/src/components/TaskBoard.jsx`
+흐름은 아래로 제한한다.
 
-새 플랫폼은 이 기반 위에 GitLab/환경/DB 계층을 얹는 방향이 맞다.
+1. GitLab 프로젝트를 inventory 에서 확인
+2. merge request 로 `.heimdall/project.yaml` 초안을 제안
+3. 사용자가 초안을 검토하고 병합
+4. 플랫폼이 `staging` 대상 서버 배포를 준비
+5. Postgres 접속 정보를 자동 생성하고 앱과 연결
+6. 이후 `Deploy Staging` 으로 이어질 수 있는 최소 기반을 남김
 
-## 제안 구조
+여기서 discovery, inventory sync, GitLab `System Hook`, bootstrap readiness, manifest validation 은 모두 staging 배포 적격성이나 준비 상태를 갱신하는 신호로만 취급한다. 실제 staging 배포는 명시적 사용자 `Deploy Staging` 액션이 있을 때만 시작한다.
 
-### Backend
+즉 이번 문서의 초점은 “모든 환경 자동화”가 아니라 `staging` 단일 경로를 먼저 닫는 것이다.
 
-- `domains/gitlab`
-  - GitLab instance / projects sync / bootstrap
-- `domains/environments`
-  - environment 생성 / deploy / 상태 조회
-- `domains/webhooks`
-  - GitLab system hook / project hook / pipeline event
-- `shared/platform_models.py`
-  - control-plane DB 모델
-- 기존 `domains/deploy`, `domains/proxmox`, `integrations/terraform`, `integrations/ansible`
-  - VM 배포 엔진으로 재사용
+## Existing Slices To Reuse
 
-### Frontend
+이미 있다고 보는 슬라이스:
 
-- Projects
-- Project Detail
-- Environment Detail
-- Blueprint / Policy 화면
-- 기존 Create Instance / Task Board / Monitoring / LLM Assistant 는 운영 기반으로 유지
+- GitLab inventory 방향
+- GitLab settings 방향
+- GitLab `System Hook` 방향
 
-## 역할 분리
+이 슬라이스들은 재설계 대상이 아니라 재사용 대상이다. 이번 MVP 에서는 이 기반을 이용해 merge-request bootstrap 과 staging 경로를 얹는다.
 
-- GitLab
-  - 코드 저장소
-  - CI/CD control plane
-  - pipeline / deployment 상태의 공식 소스
+## MVP System Boundary
 
-- 이 플랫폼
-  - GitLab 프로젝트 인벤토리
-  - 환경 오케스트레이션
-  - VM / DB / secret 조정
-  - GitLab 변수 / pipeline 자동화
+### GitLab
 
-- Proxmox / Terraform / Ansible
-  - VM 프로비저닝과 호스트 초기화
+GitLab 은 이번 MVP 에서 아래 역할만 맡는다.
 
-## 데이터 경계
+- 프로젝트 inventory 의 원천
+- merge request bootstrap 전달 채널
+- 필요한 CI/CD 변수 저장 위치
 
-### 플랫폼 내부 DB
+### Heimdall Platform
 
-현재 첫 단계는 이미 있다.
+Heimdall 은 아래를 담당한다.
 
-- task persistence
-- platform metadata
+- staging 후보 프로젝트 식별
+- 계획 중인 `.heimdall/project.yaml` 계약 검증
+- `docker-compose` 배포 전제 확인
+- Postgres 연결 정보 생성과 주입
+- staging 배포 오케스트레이션을 위한 상태 기록
+- 준비 신호와 실제 `Deploy Staging` 실행 진입점 구분
 
-다음에 추가될 것:
+### Target Server
 
-- gitlab instances
-- gitlab projects
-- environments
-- environment resources
-- audit logs
+타겟 서버는 아래 전제를 가진다.
 
-### 서비스 프로젝트용 DB
+- 앱은 `docker-compose` 로 실행된다
+- 앱은 Postgres 연결 문자열을 받아 기동한다
+- reverse proxy, domain, TLS 는 이번 MVP 범위에 포함하지 않는다
 
-사용자 프로젝트의 `staging` / `prod` DB 는 플랫폼이 별도로 생성한다.
+## Planned Control-Plane Data
 
-즉 플랫폼 내부 DB 와 서비스 앱용 DB 는 분리해서 본다.
+플랫폼 내부 DB 는 이미 시작된 기반 위에 아래 제어 평면 데이터를 추가하는 방향이다.
+
+- GitLab 프로젝트 inventory 상태
+- bootstrap 제안 상태
+- staging 환경 메타데이터
+- Postgres 연결 리소스 메타데이터
+- 배포 실행 이력
+
+중요한 점은 두 종류의 DB 를 구분하는 것이다.
+
+- 플랫폼 내부 DB: Heimdall control-plane 상태 저장
+- 서비스용 Postgres DB: 앱 런타임 연결 대상
+
+## Deferred Architecture
+
+아래는 구조적으로 필요하지만 이번 MVP 에서는 future work 로 둔다.
+
+- bootstrap 전체 자동화
+- `Deploy Staging` 완성형 UX
+- DB provisioner 완성형 운영 모델
+- pipeline trigger 완성형 동작
+- production 환경 분기
+- reverse proxy / domain / TLS 자동화
+
+이 분리는 의도적이다. 구현 계약은 [04_MVP_PHASE_PLAN.md](04_MVP_PHASE_PLAN.md) 에서 더 세밀하게 다룬다.

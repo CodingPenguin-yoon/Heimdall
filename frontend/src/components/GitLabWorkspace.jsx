@@ -21,6 +21,7 @@ import {
   createGitLabProject,
   getGitLabProjectSettings,
   getGitLabProjects,
+  requestGitLabStagingDeploy,
   syncGitLabProjects,
   updateGitLabProjectSettings,
 } from '../services/api'
@@ -38,7 +39,7 @@ const rolloutSteps = [
   },
   {
     title: '3. Deploy Staging',
-    description: '준비가 끝난 프로젝트만 staging 배포 흐름으로 넘기는 구조를 유지합니다.',
+    description: '준비가 끝난 프로젝트만 수동 버튼으로 staging deploy 요청 task를 기록하고, 실제 실행 오케스트레이션은 다음 slice에서 연결합니다.',
     icon: GitBranch,
   },
 ]
@@ -94,6 +95,20 @@ const configurationStatusLabels = {
   ready_for_bootstrap: 'Ready for bootstrap',
 }
 
+const manifestStatusBadgeClassNames = {
+  valid: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  missing: 'border-amber-200 bg-amber-50 text-amber-800',
+  invalid: 'border-rose-200 bg-rose-50 text-rose-700',
+  unchecked: 'border-gray-300 bg-gray-100 text-gray-700',
+}
+
+const manifestStatusLabels = {
+  valid: 'Valid manifest',
+  missing: 'Manifest missing',
+  invalid: 'Manifest invalid',
+  unchecked: 'Manifest unchecked',
+}
+
 const initialSettingsForm = {
   staging_enabled: false,
   ready_for_bootstrap: false,
@@ -137,6 +152,13 @@ function GitLabWorkspace() {
   const [expandedCloneProjectId, setExpandedCloneProjectId] = useState(null)
   const [copyFeedback, setCopyFeedback] = useState({ projectId: null, field: null, status: '' })
   const [showCreateForm, setShowCreateForm] = useState(false)
+  const [deployRequestingProjectId, setDeployRequestingProjectId] = useState(null)
+  const [deployFeedback, setDeployFeedback] = useState({
+    projectId: null,
+    type: '',
+    message: '',
+    taskId: '',
+  })
 
   const loadInventory = async () => {
     setLoading(true)
@@ -310,6 +332,33 @@ function GitLabWorkspace() {
       setCopyFeedback({ projectId, field, status: 'copied' })
     } catch (copyError) {
       setCopyFeedback({ projectId, field, status: 'failed' })
+    }
+  }
+
+  const handleRequestStagingDeploy = async (project) => {
+    setDeployRequestingProjectId(project.gitlab_project_id)
+    setDeployFeedback({ projectId: null, type: '', message: '', taskId: '' })
+    setInventoryNotice('')
+
+    try {
+      const response = await requestGitLabStagingDeploy(project.gitlab_project_id)
+      const { already_exists: alreadyExists, message, task_id: taskId } = response.data
+      setDeployFeedback({
+        projectId: project.gitlab_project_id,
+        type: alreadyExists ? 'info' : 'success',
+        message,
+        taskId,
+      })
+      await loadInventory()
+    } catch (apiError) {
+      setDeployFeedback({
+        projectId: project.gitlab_project_id,
+        type: 'error',
+        message: apiError.response?.data?.detail || 'Staging deploy 요청 기록에 실패했습니다.',
+        taskId: '',
+      })
+    } finally {
+      setDeployRequestingProjectId(null)
     }
   }
 
@@ -839,10 +888,10 @@ function GitLabWorkspace() {
               <h3 className="text-lg font-semibold text-gray-900">Project Setup</h3>
               <div className="mt-4 space-y-3 text-sm leading-6 text-gray-600">
                 <p className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                  이 탭에서는 프로젝트별 staging 준비 상태와 bootstrap 전 메모만 관리합니다.
+                  이 탭에서는 프로젝트별 staging 준비 상태를 관리하고, 준비가 끝난 프로젝트에 대해 수동 staging deploy 요청 task를 기록합니다.
                 </p>
                 <p className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                  DB 필요 여부, 배포 브랜치, bootstrap 전략까지 이 단계에서 확정하고 실제 실행은 다음 단계에서 붙입니다.
+                  Heimdall은 이제 `.heimdall/project.yaml` 최소 스키마를 먼저 검증한 뒤에만 staging deploy 요청을 받습니다. 현재 slice는 DB 필요 여부, 배포 브랜치, bootstrap 전략 저장과 요청 task 기록까지만 제공하며, 실제 VM/DB 오케스트레이션은 다음 단계에서 붙습니다.
                 </p>
               </div>
             </div>
@@ -891,6 +940,20 @@ function GitLabWorkspace() {
                       const deployBranchSummary = settingsSummary?.deploy_branch || 'main'
                       const bootstrapStrategySummary =
                         bootstrapStrategyLabels[settingsSummary?.bootstrap_strategy] || 'Merge Request'
+                      const manifestStatus = project.manifest_status || 'unchecked'
+                      const manifestLabel =
+                        manifestStatusLabels[manifestStatus] || manifestStatusLabels.unchecked
+                      const manifestBadgeClassName =
+                        manifestStatusBadgeClassNames[manifestStatus] ||
+                        manifestStatusBadgeClassNames.unchecked
+                      const manifestSummary =
+                        project.manifest_summary || 'Manifest validation has not run yet.'
+                      const isDeployReady =
+                        !project.archived &&
+                        Boolean(settingsSummary?.ready_for_bootstrap) &&
+                        manifestStatus === 'valid'
+                      const deployFeedbackForProject =
+                        deployFeedback.projectId === project.gitlab_project_id ? deployFeedback : null
 
                       return (
                         <article
@@ -912,6 +975,8 @@ function GitLabWorkspace() {
                               <div className="mt-4 grid gap-3 md:grid-cols-2">
                                 {[
                                   { label: 'Staging', value: stagingSummaryLabel },
+                                  { label: 'Ready', value: settingsSummary?.ready_for_bootstrap ? 'Yes' : 'No' },
+                                  { label: 'Manifest', value: manifestLabel },
                                   { label: 'Database', value: databaseSummaryLabel },
                                   { label: 'Deploy branch', value: deployBranchSummary },
                                   { label: 'Bootstrap', value: bootstrapStrategySummary },
@@ -949,7 +1014,7 @@ function GitLabWorkspace() {
                                 <div>
                                   <h4 className="text-sm font-semibold text-gray-900">Project settings</h4>
                                   <p className="mt-1 text-sm text-gray-500">
-                                    manifest 이전 단계에서 쓰는 platform-side 준비 정보만 저장합니다.
+                                    platform-side 준비 정보를 저장하고, valid `.heimdall/project.yaml`이 확인된 프로젝트만 첫 staging deploy 요청 slice로 넘깁니다.
                                   </p>
                                 </div>
                                 <span
@@ -960,6 +1025,31 @@ function GitLabWorkspace() {
                               </div>
 
                               <div className="mt-4 space-y-4">
+                                <div className="rounded-lg border border-gray-200 bg-gray-50 p-4">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <p className="text-sm font-medium text-gray-900">Manifest readiness</p>
+                                    <span
+                                      className={`inline-flex items-center rounded-full border px-2 py-1 text-[11px] font-semibold ${manifestBadgeClassName}`}
+                                    >
+                                      {manifestLabel}
+                                    </span>
+                                  </div>
+                                  <p className="mt-2 text-sm leading-6 text-gray-600">
+                                    `.heimdall/project.yaml` 최소 검증 결과를 기준으로 deploy 요청 허용 여부를 판단합니다.
+                                  </p>
+                                  <p
+                                    className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+                                      manifestStatus === 'valid'
+                                        ? 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                        : manifestStatus === 'unchecked'
+                                          ? 'border border-gray-200 bg-white text-gray-700'
+                                          : 'border border-amber-200 bg-amber-50 text-amber-900'
+                                    }`}
+                                  >
+                                    {manifestSummary}
+                                  </p>
+                                </div>
+
                                 <label className="flex items-start gap-3 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-sm text-gray-700">
                                   <input
                                     type="checkbox"
@@ -1097,20 +1187,64 @@ function GitLabWorkspace() {
                                   </div>
                                 ) : null}
 
+                                {deployFeedbackForProject ? (
+                                  <div
+                                    className={`rounded-xl px-4 py-3 text-sm ${
+                                      deployFeedbackForProject.type === 'error'
+                                        ? 'border border-rose-200 bg-rose-50 text-rose-700'
+                                        : deployFeedbackForProject.type === 'info'
+                                          ? 'border border-amber-200 bg-amber-50 text-amber-800'
+                                          : 'border border-emerald-200 bg-emerald-50 text-emerald-700'
+                                    }`}
+                                  >
+                                    <p>{deployFeedbackForProject.message}</p>
+                                    <p className="mt-2">
+                                      Task Board에서 확인:
+                                      {' '}
+                                      <Link to="/tasks" className="font-medium underline">
+                                        /tasks
+                                      </Link>
+                                      {deployFeedbackForProject.taskId ? ` · task_id: ${deployFeedbackForProject.taskId}` : ''}
+                                    </p>
+                                  </div>
+                                ) : null}
+
                                 <div className="flex items-center justify-between gap-4 border-t border-gray-200 pt-4">
                                   <p className="text-sm text-gray-500">
-                                    실제 bootstrap/staging 실행은 아직 없고, 지금은 준비 정보만 저장합니다.
+                                    현재는 valid manifest를 통과한 뒤 수동 `Deploy Staging` 버튼으로 요청 task만 기록합니다. 실제 VM/DB 실행은 아직 시작되지 않습니다.
                                   </p>
-                                  <button
-                                    type="button"
-                                    onClick={() => handleSaveSettings(project.gitlab_project_id)}
-                                    disabled={settingsSavingProjectId === project.gitlab_project_id}
-                                    className="inline-flex items-center gap-2 rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm font-medium text-blue-700 transition-colors hover:border-blue-400 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
-                                  >
-                                    <RefreshCw className={`h-4 w-4 ${settingsSavingProjectId === project.gitlab_project_id ? 'animate-spin' : ''}`} />
-                                    Save settings
-                                  </button>
+                                  <div className="flex flex-wrap items-center justify-end gap-3">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleRequestStagingDeploy(project)}
+                                      disabled={!isDeployReady || deployRequestingProjectId === project.gitlab_project_id}
+                                      className="inline-flex items-center gap-2 rounded-lg border border-emerald-300 bg-white px-4 py-2 text-sm font-medium text-emerald-700 transition-colors hover:border-emerald-400 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
+                                    >
+                                      <GitBranch className="h-4 w-4" />
+                                      {deployRequestingProjectId === project.gitlab_project_id ? 'Recording...' : 'Deploy Staging'}
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => handleSaveSettings(project.gitlab_project_id)}
+                                      disabled={settingsSavingProjectId === project.gitlab_project_id}
+                                      className="inline-flex items-center gap-2 rounded-lg border border-blue-300 bg-white px-4 py-2 text-sm font-medium text-blue-700 transition-colors hover:border-blue-400 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
+                                    >
+                                      <RefreshCw className={`h-4 w-4 ${settingsSavingProjectId === project.gitlab_project_id ? 'animate-spin' : ''}`} />
+                                      Save settings
+                                    </button>
+                                  </div>
                                 </div>
+                                {!isDeployReady ? (
+                                  <p className="text-sm text-amber-700">
+                                    {project.archived
+                                      ? 'Archived 프로젝트는 staging deploy 요청을 기록할 수 없습니다.'
+                                      : !settingsSummary?.ready_for_bootstrap
+                                        ? '`Ready for bootstrap` 상태가 되어야 staging deploy 요청 버튼이 활성화됩니다.'
+                                        : manifestStatus !== 'valid'
+                                          ? `유효한 \`.heimdall/project.yaml\` 이 필요합니다. 현재 상태: ${manifestLabel}.`
+                                          : 'staging deploy 요청 조건을 확인하세요.'}
+                                  </p>
+                                ) : null}
                               </div>
                             </div>
                           ) : null}

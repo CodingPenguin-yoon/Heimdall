@@ -60,18 +60,26 @@
 - `PLATFORM_STATE_DATABASE_URL` 이 있으면 그 값을 우선 사용한다.
 - URL 이 없으면 `PLATFORM_STATE_DB_PATH` 또는 기본값 `data/platform_state.db` 를 사용한다.
 
-## GitLab 준비용 설정
+## GitLab Workspace / Inventory / Webhook
 
-이 항목들은 아직 GitLab inventory/API 구현 전이라 현재 런타임에서 적극 사용되지는 않는다. 다음 단계 GitLab 연동을 바로 시작할 수 있게 준비용으로 문서화하는 값들이다.
+이 항목들은 현재 런타임에서 실제로 사용된다. 다만 모두 선택 사항이며,
+설정하지 않아도 기존 Proxmox VM 배포 경로는 그대로 동작한다.
 
 | 변수 | 기본값 | 설명 |
 | --- | --- | --- |
 | `GITLAB_BASE_URL` | 없음 | GitLab base URL (`https://gitlab.example.com`) |
-| `GITLAB_API_TOKEN` | 없음 | backend 가 GitLab API 호출에 쓸 토큰 |
+| `GITLAB_API_TOKEN` | 없음 | backend 가 inventory sync, namespace 조회, 프로젝트 생성에 쓸 토큰 |
 | `GITLAB_VERIFY_SSL` | `true` | GitLab TLS 검증 여부 |
-| `GITLAB_DEFAULT_NAMESPACE_PATH` | `heimdall` | GitLab 프로젝트 생성 시 강제할 기본 namespace path/name |
+| `GITLAB_DEFAULT_NAMESPACE_PATH` | `heimdall` | GitLab 프로젝트 생성 시 기본 namespace path/name |
 | `GITLAB_SYSTEM_HOOK_SECRET` | 없음 | System Hook 검증용 secret |
 | `PLATFORM_PUBLIC_BASE_URL` | 없음 | GitLab 이 backend webhook 을 호출할 플랫폼 공개 URL |
+
+메모:
+
+- `GET /api/gitlab/projects` 는 persisted inventory 와 설정 상태를 보여준다
+- `POST /api/gitlab/projects/sync` 는 GitLab API 에서 inventory 를 다시 읽는다
+- `POST /api/webhooks/gitlab/system` 은 지원되는 GitLab System Hook 이벤트를 받아 inventory sync 를 트리거한다
+- bootstrap / Deploy Staging 실행은 아직 구현되지 않았고, 현재는 프로젝트 설정과 준비 상태 저장까지만 지원한다
 
 ## LLM / Redis
 
@@ -96,7 +104,7 @@ FRONTEND_PORT=5173
 PROXMOX_API_URL=https://your-proxmox.example.com:8006/api2/json
 PROXMOX_API_TOKEN_ID=root@pam!token-name
 PROXMOX_API_TOKEN_SECRET=replace-me
-PROXMOX_TLS_INSECURE=true
+PROXMOX_TLS_INSECURE=false
 
 ANSIBLE_SSH_USER=root
 ANSIBLE_SSH_PRIVATE_KEY_FILE=/absolute/path/to/id_rsa
@@ -116,3 +124,10 @@ IP_POOL_END=192.168.2.150
 IP_GATEWAY=192.168.2.1
 IP_SUBNET=24
 ```
+
+## 보안 메모
+
+- 운영 환경에서는 `PROXMOX_TLS_INSECURE=false`, `GITLAB_VERIFY_SSL=true` 를 유지한다
+- `GITLAB_API_TOKEN` 은 최소 scope 로 발급하고 주기적으로 교체한다
+- webhook 검증을 쓸 경우 `GITLAB_SYSTEM_HOOK_SECRET` 은 충분히 긴 랜덤 문자열로 둔다
+- 예시 값은 자리표시자다. 실제 비밀값을 문서 예시 그대로 재사용하지 않는다

@@ -1,30 +1,37 @@
 # Documentation Index
 
-현재 저장소에서 신뢰할 기준 문서는 이 인덱스에 남아 있는 문서들뿐이다. 레거시/중복/변경 이력성 문서는 정리했다.
+This index defines the active Heimdall documentation set. If a document is not linked here, treat it as legacy, historical, or otherwise unindexed reference material.
 
-## Start Here
+## Product and direction
 
-- `../README.md`
-- `LOCAL_RUN_GUIDE.md`
-- `ENV_SETTINGS_EXPLAINED.md`
+Use these documents to understand what Heimdall is, what exists now, and where the product is going:
 
-## Current Ops Docs
+- [README.md](../README.md)
+- [platform/00_PLATFORM_DESIGN_SUMMARY.md](platform/00_PLATFORM_DESIGN_SUMMARY.md)
+- [platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md](platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md)
+- [platform/02_IMPLEMENTATION_ROADMAP.md](platform/02_IMPLEMENTATION_ROADMAP.md)
+- [platform/03_PROJECT_MANIFEST_SPEC.md](platform/03_PROJECT_MANIFEST_SPEC.md)
+- [platform/04_MVP_PHASE_PLAN.md](platform/04_MVP_PHASE_PLAN.md)
 
-- `../backend/README.md`
-- `../frontend/README.md`
-- `TEMPLATE_PREPARATION.md`
-- `ANSIBLE_AUTOMATION.md`
-- `VM_CREATION_METHODS.md`
+## Operator setup
 
-## Platform Roadmap
+Use these when running, configuring, or preparing the current platform:
 
-- `platform/00_PLATFORM_DESIGN_SUMMARY.md`
-- `platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md`
-- `platform/02_IMPLEMENTATION_ROADMAP.md`
-- `platform/03_PROJECT_MANIFEST_SPEC.md`
+- [LOCAL_RUN_GUIDE.md](LOCAL_RUN_GUIDE.md)
+- [ENV_SETTINGS_EXPLAINED.md](ENV_SETTINGS_EXPLAINED.md)
+- [TEMPLATE_PREPARATION.md](TEMPLATE_PREPARATION.md)
+- [ANSIBLE_AUTOMATION.md](ANSIBLE_AUTOMATION.md)
+- [VM_CREATION_METHODS.md](VM_CREATION_METHODS.md)
 
-## Reading Rule
+## Service-specific docs
 
-- 현재 동작을 알고 싶으면 `Current Ops Docs` 를 먼저 본다.
-- 미래 설계와 다음 작업은 `Platform Roadmap` 을 본다.
-- 문서와 코드가 충돌하면 코드를 우선한다.
+Use these for implementation details of the current application surfaces:
+
+- [backend/README.md](../backend/README.md)
+- [frontend/README.md](../frontend/README.md)
+
+## Reading rule
+
+- For current product behavior, start with the top-level [README.md](../README.md) and `Operator setup`.
+- For active product direction, use `Product and direction`.
+- If code and documentation disagree, trust the code.

@@ -1,50 +1,67 @@
 # Platform Design Summary
 
-이 문서는 현재 합의된 큰 방향만 짧게 정리한다.
+이 문서는 Heimdall 전달 방향의 현재 합의만 짧게 정리한다.
 
-## 현재 위치
+관련 문서:
 
-이 프로젝트는 이미 아래 기반을 갖고 있다.
+- [01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md](01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md)
+- [02_IMPLEMENTATION_ROADMAP.md](02_IMPLEMENTATION_ROADMAP.md)
+- [03_PROJECT_MANIFEST_SPEC.md](03_PROJECT_MANIFEST_SPEC.md)
+- [04_MVP_PHASE_PLAN.md](04_MVP_PHASE_PLAN.md)
 
-- Proxmox 템플릿 클론 기반 VM 배포
-- Terraform + Ansible 후처리
-- Task Board + SSE
-- instance lifecycle / resize
-- 플랫폼 내부 상태 DB 1차 도입
+## Delivery Direction
 
-플랫폼 내부 상태 DB의 첫 단계는 완료됐다.
+Heimdall 의 현재 전달 방향은 아래에 집중한다.
 
-- task persistence 는 SQLAlchemy + Alembic 기반
-- 기본 저장소는 `data/platform_state.db`
-- legacy `data/task_history.json` 은 import source
+- 개발자 친화적인 서버 배포
+- 서비스 DB 자동 연결
+- `staging` 우선
+- `docker-compose` 우선
+- `postgres` 우선
+- bootstrap 은 직접 반영보다 merge request 우선
 
-즉 “플랫폼 내부 DB 도입”은 시작 단계가 아니라 이미 닫힌 첫 슬라이스다.
+즉 지금 문서의 MVP 는 “GitLab 프로젝트를 감지하고, 최소 manifest 초안을 merge request 로 제안하고, `staging` 에 대해 `docker-compose` 기반 서버 배포와 Postgres 자동 연결까지 이어지는 흐름”이다.
 
-## 목표 정체성
+## Already Exists
 
-최종 목표는 GitLab 프로젝트를 기준으로 환경을 자동 온보딩하는 개발자 셀프서비스 환경 플랫폼이다.
+아래 슬라이스는 이미 존재하는 자산으로 본다.
 
-- GitLab 프로젝트 감지
-- 프로젝트 설정 / bootstrap
-- `Deploy Staging`
-- VM + DB + secret + pipeline 오케스트레이션
+- GitLab inventory 관련 기본 방향
+- GitLab settings 관련 기본 방향
+- GitLab `System Hook` 관련 기본 방향
 
-## 다음 초점
+이 문서 묶음은 위 자산이 이미 있다는 전제 위에서, 당장 전달할 Heimdall MVP 계약을 더 좁게 다시 정리한다.
 
-다음 우선순위는 GitLab 인벤토리다.
+## MVP Contract
 
-1. GitLab instance 설정
-2. `gitlab_projects` / audit log 같은 control-plane 모델
-3. `Projects API` sync
-4. `System Hook`
-5. 프로젝트 설정 화면
+이번 MVP 에서 의도적으로 지원 범위를 좁힌다.
 
-그 다음에 Bootstrap 과 `Deploy Staging` 으로 간다.
+- 환경 범위는 `staging` 만 포함한다
+- 배포 방식은 `docker-compose` 만 포함한다
+- DB 엔진은 `postgres` 만 포함한다
+- bootstrap 진입점은 merge request 기반 초안 생성으로 한정한다
+- 앱 저장소 계약은 계획 중인 `.heimdall/project.yaml` 로 한정한다
+- 실제 staging 배포 시작은 명시적 사용자 `Deploy Staging` 액션에서만 가능하다
+- discovery, inventory sync, `System Hook`, bootstrap readiness, manifest validation 은 준비/적격 신호일 뿐 배포를 자동 시작하지 않는다
 
-## 핵심 판단
+아래는 이번 MVP 범위 밖이다.
 
-- VM 생성은 template clone only
-- Ansible 은 호스트 운영 표준화 역할 유지
-- GitLab 은 control plane
-- 플랫폼이 DB 자동화와 배포 오케스트레이션을 담당
-- 플랫폼 내부 DB는 이미 SQLAlchemy + Alembic 기준으로 시작했다
+- bootstrap 자동 완성 전반
+- `Deploy Staging` 전체 운영 경험 완성
+- DB provisioner 완성
+- pipeline trigger 완성
+- production 배포 흐름
+- reverse proxy / domain / TLS 자동화
+
+위 항목은 제거가 아니라 future work 로 명시적으로 뒤로 민다.
+
+## Scope Boundary
+
+현재 문서 기준으로 Heimdall MVP 는 다음 질문에만 답하면 된다.
+
+1. GitLab 프로젝트를 어떻게 staging 후보로 식별할 것인가
+2. `.heimdall/project.yaml` 초안을 어떻게 merge request 로 제안할 것인가
+3. staging 서버를 `docker-compose` 로 어떻게 띄울 것인가
+4. Postgres 접속 정보를 어떻게 생성하고 앱에 어떻게 연결할 것인가
+
+그 외 운영 고도화는 [02_IMPLEMENTATION_ROADMAP.md](02_IMPLEMENTATION_ROADMAP.md) 와 [04_MVP_PHASE_PLAN.md](04_MVP_PHASE_PLAN.md) 의 후속 단계로 둔다.

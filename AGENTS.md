@@ -1,6 +1,6 @@
 # AGENTS.md
 
-## Argus operating mode
+## Heimdall operating mode
 - The main session is the coordinator.
 - For non-trivial tasks, delegate to explorer, reviewer, docs_researcher, then worker.
 - Only worker is allowed to edit code.

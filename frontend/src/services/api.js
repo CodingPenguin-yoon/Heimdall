@@ -167,6 +167,16 @@ export const getLogs = async (taskId) => {
   }
 }
 
+export const requestGitLabStagingDeploy = async (projectId) => {
+  try {
+    const response = await apiClient.post(`/gitlab/projects/${projectId}/deploy/staging`)
+    return response
+  } catch (error) {
+    console.error('GitLab staging deploy request API error:', error)
+    throw error
+  }
+}
+
 // 작업 목록 조회 API (최신순)
 // 사용 예:
 // - getTasks(200)
