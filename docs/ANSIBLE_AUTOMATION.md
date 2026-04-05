@@ -12,15 +12,16 @@ Heimdall 에서는 GitLab Workspace/control-plane 과 분리된 low-level VM eng
 ## 현재 동작
 
 1. Terraform 이 VM 생성
-2. Terraform 출력 또는 static 입력으로 VM IP 확보
-3. backend 가 `infra/ansible/inventory.yml` 을 동적으로 생성
-4. `ansible-playbook` 실행
+2. 템플릿 clone 기반 생성이면 필요 시 VM stop -> CPU/memory 조정 -> start
+3. Terraform 출력 또는 static 입력으로 VM IP 확보
+4. backend 가 task별 `infra/ansible/inventory.<task>.yml` inventory 를 동적으로 생성
+5. `ansible-playbook` 실행
 
 IP 를 얻지 못하면 Ansible 단계는 건너뛴다.
 
 ## inventory 생성
 
-동적 inventory 는 `infra/ansible/inventory.yml` 에 기록된다.
+동적 inventory 는 task마다 `infra/ansible/inventory.<task>.yml` 형태로 기록되고 실행 후 정리된다.
 여기서 말하는 inventory 는 VM 접속용 Ansible inventory 다. GitLab project inventory 와는 다른 개념이다.
 
 주요 값:
@@ -55,7 +56,9 @@ backend 는 아래 extra vars 를 넘긴다.
 ## 주의점
 
 - Node.js 설치 등 일부 역할은 외부 네트워크 의존성이 있다
-- inventory 파일은 고정 경로를 덮어쓰므로 동시 실행이 많아지면 파일 경합 여지가 있다
+- task별 inventory 파일로 바뀌어서 이전보다 안전하지만, 같은 VM/같은 release 를 동시에 배포하면 여전히 운영 충돌은 날 수 있다
 - `ansible-playbook` CLI 는 backend 가 실행되는 로컬 환경에 설치돼 있어야 한다
 - 현재 SSH 공통 옵션에 `StrictHostKeyChecking=no` 가 들어가므로, 신뢰 가능한 내부망/테스트 환경 기준으로 운영하는 편이 안전하다
-- GitLab Workspace 의 bootstrap / Deploy Staging 은 아직 여기로 연결되지 않는다. 현재 Ansible 은 VM 생성 직후 후처리까지만 담당한다
+- GitLab Workspace 의 `Deploy Staging` 은 현재 수동 staging app deploy 슬라이스에서 이 경로를 재사용한다
+- 현재 플레이북은 GitLab archive 를 받아 release 디렉터리에 풀고, `docker compose up -d --build` 와 HTTP healthcheck 까지 수행한다
+- DB 자동화와 `DATABASE_URL` 주입은 아직 별도 구현 전이다

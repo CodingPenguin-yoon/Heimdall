@@ -79,7 +79,7 @@
 - `GET /api/gitlab/projects` 는 persisted inventory 와 설정 상태를 보여준다
 - `POST /api/gitlab/projects/sync` 는 GitLab API 에서 inventory 를 다시 읽는다
 - `POST /api/webhooks/gitlab/system` 은 지원되는 GitLab System Hook 이벤트를 받아 inventory sync 를 트리거한다
-- bootstrap / Deploy Staging 실행은 아직 구현되지 않았고, 현재는 프로젝트 설정과 준비 상태 저장까지만 지원한다
+- bootstrap 은 아직 구현되지 않았고, `Deploy Staging` 은 valid manifest + staging infra profile 기준으로 수동 staging app deploy 경로를 지원한다
 
 ## LLM / Redis
 

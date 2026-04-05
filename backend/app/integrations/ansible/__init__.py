@@ -7,6 +7,7 @@ Ansible 실행 서비스 패키지
 
 import subprocess
 import os
+import uuid
 import yaml
 from pathlib import Path
 from typing import Optional, Dict, List
@@ -44,7 +45,7 @@ class AnsibleService:
         # Inventory 파일 경로
         self.inventory_file = self.ansible_dir / "inventory.yml"
     
-    def create_inventory(self, hosts: List[Dict[str, str]], task_id: str = None) -> bool:
+    def create_inventory(self, hosts: List[Dict[str, str]], task_id: str = None) -> Optional[Path]:
         """
         Ansible inventory 파일 동적 생성
         
@@ -84,19 +85,25 @@ class AnsibleService:
                 
                 inventory_data["all"]["children"]["proxmox_vms"]["hosts"][host_name] = host_config
             
-            # YAML 파일로 저장
-            with open(self.inventory_file, "w") as f:
-                yaml.dump(inventory_data, f, default_flow_style=False, allow_unicode=True)
-            
+            inventory_path = self.inventory_file
             if task_id:
-                task_manager.append_log(task_id, f"Inventory 파일 생성 완료: {self.inventory_file}")
+                safe_task_id = "".join(ch for ch in str(task_id) if ch.isalnum() or ch in {"-", "_"})
+                suffix = safe_task_id or uuid.uuid4().hex[:8]
+                inventory_path = self.ansible_dir / f"inventory.{suffix}.yml"
+
+            # YAML 파일로 저장
+            with open(inventory_path, "w") as f:
+                yaml.dump(inventory_data, f, default_flow_style=False, allow_unicode=True)
+
+            if task_id:
+                task_manager.append_log(task_id, f"Inventory 파일 생성 완료: {inventory_path}")
                 task_manager.append_log(task_id, f"호스트 수: {len(hosts)}")
-            
-            return True
+
+            return inventory_path
         except Exception as e:
             if task_id:
                 task_manager.append_log(task_id, f"Inventory 파일 생성 실패: {str(e)}")
-            return False
+            return None
     
     def run_playbook(
         self,
@@ -126,12 +133,16 @@ class AnsibleService:
             return False, error_msg
         
         # Inventory 파일 생성 (호스트 정보가 제공된 경우)
+        created_inventory_path: Optional[Path] = None
         if inventory_hosts:
-            if not self.create_inventory(inventory_hosts, task_id):
+            created_inventory_path = self.create_inventory(inventory_hosts, task_id)
+            if created_inventory_path is None:
                 return False, "Inventory 파일 생성 실패"
-        
+
         # Inventory 파일이 없으면 기본 inventory.yml 사용
-        inventory_path = self.inventory_file if self.inventory_file.exists() else None
+        inventory_path = created_inventory_path
+        if inventory_path is None and self.inventory_file.exists():
+            inventory_path = self.inventory_file
         
         try:
             # ansible-playbook 명령어 구성
@@ -150,7 +161,14 @@ class AnsibleService:
                 command.extend(["-e", vars_json])
             
             if task_id:
-                task_manager.append_log(task_id, f"실행 명령어: {' '.join(command)}")
+                display_command = command[:]
+                if extra_vars:
+                    display_command = command[:-2] + ["-e", "<redacted-extra-vars>"]
+                    task_manager.append_log(
+                        task_id,
+                        f"Ansible extra_vars keys: {', '.join(sorted(str(key) for key in extra_vars.keys()))}",
+                    )
+                task_manager.append_log(task_id, f"실행 명령어: {' '.join(display_command)}")
                 task_manager.append_log(task_id, f"작업 디렉토리: {self.ansible_dir}")
                 task_manager.append_log(task_id, "=== Ansible Playbook 실행 시작 ===")
             
@@ -192,3 +210,9 @@ class AnsibleService:
             if task_id:
                 task_manager.append_log(task_id, f"EXCEPTION: {error_msg}")
             return False, error_msg
+        finally:
+            if created_inventory_path is not None and created_inventory_path.exists():
+                try:
+                    created_inventory_path.unlink()
+                except OSError:
+                    pass

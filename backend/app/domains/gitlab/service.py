@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from ipaddress import IPv4Address, IPv4Interface, ip_address, ip_interface
+from pathlib import PurePosixPath
+import re
+import time
 from uuid import uuid4
 from typing import Any
 from urllib.parse import quote, urljoin
@@ -12,6 +16,7 @@ import yaml
 from fastapi import BackgroundTasks
 from sqlalchemy import select
 
+from app.domains.deploy.service import DeploymentService
 from app.shared.gitlab_settings import GitLabSettings, get_gitlab_settings
 from app.shared.platform_db import create_platform_engine, create_session_factory
 from app.shared.platform_models import GitLabProject, GitLabProjectSettings, PlatformMetadata
@@ -51,6 +56,7 @@ class GitLabInventoryService:
     def __init__(self) -> None:
         self._engine = create_platform_engine()
         self._session_factory = create_session_factory(self._engine)
+        self._deployment_service = DeploymentService()
 
     def list_projects(self) -> dict[str, Any]:
         settings = get_gitlab_settings()
@@ -127,6 +133,18 @@ class GitLabInventoryService:
             project_settings.migration_command = normalized_payload["migration_command"]
             project_settings.deploy_branch = normalized_payload["deploy_branch"]
             project_settings.bootstrap_strategy = normalized_payload["bootstrap_strategy"]
+            project_settings.staging_server_name = normalized_payload["staging_server_name"]
+            project_settings.staging_server_id = normalized_payload["staging_server_id"]
+            project_settings.staging_template_id = normalized_payload["staging_template_id"]
+            project_settings.staging_storage_id = normalized_payload["staging_storage_id"]
+            project_settings.staging_network_ids = normalized_payload["staging_network_ids"]
+            project_settings.staging_cpu_cores = normalized_payload["staging_cpu_cores"]
+            project_settings.staging_memory_gb = normalized_payload["staging_memory_gb"]
+            project_settings.staging_disk_size_gb = normalized_payload["staging_disk_size_gb"]
+            project_settings.staging_vm_ip = normalized_payload["staging_vm_ip"]
+            project_settings.staging_vm_gateway = normalized_payload["staging_vm_gateway"]
+            project_settings.staging_ansible_packages = normalized_payload["staging_ansible_packages"]
+            project_settings.staging_ansible_roles = normalized_payload["staging_ansible_roles"]
             project_settings.notes = normalized_payload["notes"]
             project_settings.updated_at = now
 
@@ -246,6 +264,11 @@ class GitLabInventoryService:
         request_payload["namespace_id"] = self._resolve_default_namespace_id(settings)
 
         project_payload = self._create_remote_project(settings, request_payload)
+        manifest_seed_result = self._seed_project_manifest_draft(
+            settings=settings,
+            project_payload=project_payload,
+            initialize_with_readme=initialize_with_readme,
+        )
         now = self._now_iso()
 
         with self._session_factory.begin() as session:
@@ -261,7 +284,9 @@ class GitLabInventoryService:
                 project=record,
                 project_settings=None,
                 manifest_context=self._create_manifest_lookup_context(settings),
-            )
+            ),
+            "manifest_seeded": bool(manifest_seed_result["seeded"]),
+            "manifest_seed_message": manifest_seed_result["message"],
         }
 
     def request_staging_deploy(
@@ -291,16 +316,22 @@ class GitLabInventoryService:
                 raise GitLabProjectSettingsError(
                     "ready_for_bootstrap must be true before requesting a staging deploy."
                 )
+            if project_settings.database_required:
+                raise GitLabProjectSettingsError(
+                    "database_required=true projects are not supported yet for Deploy Staging."
+                )
 
-            manifest = self._load_project_manifest_status(
+            manifest = self._load_project_manifest(
                 project=project,
                 manifest_context=self._create_manifest_lookup_context(get_gitlab_settings()),
+                ref=project_settings.deploy_branch,
             )
             if manifest["manifest_status"] != "valid":
                 raise GitLabProjectSettingsError(
                     f"Staging deploy requires a valid {MANIFEST_FILE_PATH}: "
                     f"{manifest['manifest_summary']}"
                 )
+            self._validate_staging_infra_profile(project_settings)
 
             duplicate_task = self._find_live_staging_request(project_id)
             if duplicate_task is not None:
@@ -315,21 +346,82 @@ class GitLabInventoryService:
             task_metadata = {
                 "action": "gitlab_staging_deploy",
                 "environment": "staging",
-                "trigger_source": "user",
+                "trigger_source": "gitlab",
                 "gitlab_project_id": project.gitlab_project_id,
                 "path_with_namespace": project.path_with_namespace,
                 "deploy_branch": project_settings.deploy_branch,
+                "execution_mode": "manual_staging_app_deploy",
+                "infra_execution": "starting",
                 "note": (
-                    "Manual staging deploy request recorded only. "
-                    "This MVP slice does not execute VM or DB orchestration yet."
+                    "GitLab staging wrapper task. This slice runs manual staging infra "
+                    "provisioning plus docker-compose app deployment. DB automation is excluded."
                 ),
             }
             task_manager.create_task(task_id, metadata=task_metadata)
             task_manager.update_status(task_id, TaskStatus.PENDING)
+            task_manager.update_status(task_id, TaskStatus.RUNNING)
+            task_manager.update_progress(
+                task_id,
+                5.0,
+                text="GitLab staging wrapper started",
+                source="phase",
+            )
+            task_manager.append_log(task_id, "=== GitLab staging deploy wrapper 시작 ===")
+            task_manager.append_log(
+                task_id,
+                "이 작업은 manual staging app deploy 모드로 실제 인프라 배포 task를 연결합니다.",
+            )
+            task_manager.append_log(
+                task_id,
+                f"대상 프로젝트: {project.path_with_namespace} (GitLab project ID: {project_id})",
+            )
+            task_manager.append_log(task_id, f"배포 브랜치: {project_settings.deploy_branch}")
+
+            deploy_request = self._build_staging_deploy_request(
+                project,
+                project_settings,
+                manifest_payload=manifest["manifest_payload"],
+            )
+            deploy_task_id = self._deployment_service.start_deployment_with_request(
+                background_tasks=background_tasks,
+                deploy_request=deploy_request,
+            )
+            task_manager.update_metadata(
+                deploy_task_id,
+                {
+                    "trigger_source": "gitlab",
+                    "environment": "staging",
+                    "gitlab_project_id": project.gitlab_project_id,
+                    "path_with_namespace": project.path_with_namespace,
+                    "deploy_branch": project_settings.deploy_branch,
+                    "linked_wrapper_task_id": task_id,
+                    "execution_mode": "manual_staging_app_deploy",
+                    "app_deploy_enabled": True,
+                },
+            )
+            task_manager.append_log(
+                deploy_task_id,
+                "GitLab Deploy Staging 연결됨: 실제 인프라 배포 후 docker-compose 앱 배포까지 수행합니다. DB 자동화는 제외됩니다.",
+            )
+            task_manager.update_metadata(
+                task_id,
+                {
+                    "linked_deploy_task_id": deploy_task_id,
+                    "app_deploy_enabled": True,
+                },
+            )
+            task_manager.append_log(task_id, f"실제 인프라 배포 task 생성: {deploy_task_id}")
+            task_manager.update_progress(
+                task_id,
+                15.0,
+                text="Infra provisioning task linked",
+                source="phase",
+            )
 
         background_tasks.add_task(
-            self._record_staging_deploy_request,
+            self._finalize_staging_deploy_wrapper,
             task_id,
+            deploy_task_id,
             {
                 "project_id": project_id,
                 "path_with_namespace": project.path_with_namespace,
@@ -339,8 +431,11 @@ class GitLabInventoryService:
 
         return {
             "task_id": task_id,
-            "message": "Staging deploy 요청이 기록되었습니다. Task Board에서 진행 상태를 확인하세요.",
-            "status": "pending",
+            "message": (
+                "Staging infra 및 app deploy가 시작되었습니다. "
+                "Task Board에서 wrapper task와 linked deploy task를 확인하세요."
+            ),
+            "status": "running",
             "already_exists": False,
         }
 
@@ -356,7 +451,10 @@ class GitLabInventoryService:
             metadata = task.get("metadata") or {}
             if not isinstance(metadata, dict):
                 continue
-            if metadata.get("action") != "gitlab_staging_deploy":
+            action = metadata.get("action")
+            is_wrapper = action == "gitlab_staging_deploy"
+            is_gitlab_deploy = action == "deploy" and metadata.get("trigger_source") == "gitlab"
+            if not is_wrapper and not is_gitlab_deploy:
                 continue
             if metadata.get("environment") != "staging":
                 continue
@@ -371,56 +469,141 @@ class GitLabInventoryService:
             return task
         return None
 
-    def _record_staging_deploy_request(self, task_id: str, context: dict[str, Any]) -> None:
+    def _validate_staging_infra_profile(self, project_settings: GitLabProjectSettings) -> None:
+        required_fields = {
+            "staging_server_name": project_settings.staging_server_name,
+            "staging_server_id": project_settings.staging_server_id,
+            "staging_template_id": project_settings.staging_template_id,
+            "staging_storage_id": project_settings.staging_storage_id,
+        }
+        missing_fields = [
+            field_name for field_name, value in required_fields.items() if not str(value or "").strip()
+        ]
+        network_ids = [
+            str(item).strip() for item in list(project_settings.staging_network_ids or []) if str(item).strip()
+        ]
+        if not network_ids:
+            missing_fields.append("staging_network_ids")
+        if missing_fields:
+            raise GitLabProjectSettingsError(
+                "Staging infra profile is incomplete. Missing required fields: "
+                + ", ".join(missing_fields)
+            )
+
+    def _build_staging_deploy_request(
+        self,
+        project: GitLabProject,
+        project_settings: GitLabProjectSettings,
+        *,
+        manifest_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        network_ids = [
+            str(item).strip() for item in list(project_settings.staging_network_ids or []) if str(item).strip()
+        ]
+        deploy_config = manifest_payload.get("deploy") if isinstance(manifest_payload.get("deploy"), dict) else {}
+        deploy_request = {
+            "server_name": str(project_settings.staging_server_name or "").strip(),
+            "server_id": str(project_settings.staging_server_id or "").strip(),
+            "template_id": str(project_settings.staging_template_id or "").strip(),
+            "storage_id": str(project_settings.staging_storage_id or "").strip(),
+            "network_ids": network_ids,
+            "disk_size_gb": project_settings.staging_disk_size_gb,
+            "ansible_packages": list(project_settings.staging_ansible_packages or []),
+            "ansible_roles": list(project_settings.staging_ansible_roles or []),
+            "metadata": {
+                "trigger_source": "gitlab",
+                "environment": "staging",
+                "gitlab_project_id": project.gitlab_project_id,
+                "path_with_namespace": project.path_with_namespace,
+                "deploy_branch": project_settings.deploy_branch,
+                "execution_mode": "manual_staging_app_deploy",
+            },
+            "gitlab_project_id": project.gitlab_project_id,
+            "path_with_namespace": project.path_with_namespace,
+            "deploy_branch": project_settings.deploy_branch,
+            "app_deploy_enabled": True,
+            "app_project_slug": self._build_app_project_slug(project.path_with_namespace),
+            "app_runtime": str(manifest_payload.get("runtime") or "").strip(),
+            "compose_file": str(self._normalize_compose_file_path(deploy_config.get("compose_file")) or ""),
+            "app_port": int(deploy_config.get("app_port")),
+            "healthcheck_path": str(deploy_config.get("healthcheck_path") or "").strip(),
+        }
+        if project_settings.staging_cpu_cores is not None:
+            deploy_request["cpu_cores"] = project_settings.staging_cpu_cores
+        if project_settings.staging_memory_gb is not None:
+            deploy_request["memory_gb"] = project_settings.staging_memory_gb
+        if project_settings.staging_vm_ip is not None:
+            deploy_request["vm_ip"] = project_settings.staging_vm_ip
+        if project_settings.staging_vm_gateway is not None:
+            deploy_request["vm_gateway"] = project_settings.staging_vm_gateway
+        return deploy_request
+
+    def _finalize_staging_deploy_wrapper(
+        self,
+        task_id: str,
+        deploy_task_id: str,
+        context: dict[str, Any],
+    ) -> None:
         try:
-            task_manager.update_status(task_id, TaskStatus.RUNNING)
-            task_manager.update_progress(
-                task_id,
-                10.0,
-                text="Manual staging deploy request received",
-                source="phase",
-            )
-            task_manager.append_log(task_id, "=== Staging deploy request recording 시작 ===")
+            task_manager.append_log(task_id, "연결된 실제 배포 task 완료를 기다리는 중입니다.")
+            task_manager.update_progress(task_id, 25.0, text="Waiting for linked deploy", source="phase")
+            deploy_task = None
+            for _ in range(5):
+                deploy_task = task_manager.get_task_detail(deploy_task_id)
+                if deploy_task is not None:
+                    break
+                time.sleep(0.2)
+            if deploy_task is None:
+                raise RuntimeError(f"Linked deploy task {deploy_task_id} was not found.")
+
+            deploy_status = str(deploy_task.get("status") or "").lower()
+            deploy_progress = float(deploy_task.get("progress") or 0.0)
             task_manager.append_log(
                 task_id,
-                f"대상 프로젝트: {context['path_with_namespace']} (GitLab project ID: {context['project_id']})",
-            )
-            task_manager.append_log(task_id, f"배포 브랜치: {context['deploy_branch']}")
-            task_manager.append_log(
-                task_id,
-                "이 작업은 수동 staging deploy 요청만 기록합니다. 실제 VM/DB 실행은 아직 연결되지 않았습니다.",
+                f"실제 인프라 배포 task 상태: {deploy_task.get('status')} (task_id: {deploy_task_id})",
             )
             task_manager.update_progress(
                 task_id,
-                65.0,
-                text="Request recorded without infra execution",
+                min(95.0, max(30.0, deploy_progress)),
+                text="Linked staging deploy completed",
                 source="phase",
             )
             task_manager.update_metadata(
                 task_id,
                 {
                     "request_recorded_at": self._now_iso(),
-                    "execution_mode": "request_record_only",
-                    "infra_execution": "not_started",
+                    "execution_mode": "manual_staging_app_deploy",
+                    "infra_execution": "completed" if deploy_status == "success" else "failed",
+                    "linked_deploy_task_id": deploy_task_id,
+                    "linked_deploy_status": deploy_task.get("status"),
+                    "app_deploy_enabled": True,
                 },
             )
             task_manager.append_log(
                 task_id,
-                "실제 Terraform, Ansible, VM, DB 오케스트레이션은 수행하지 않고 Task Board 추적 정보만 남깁니다.",
+                "이 slice는 manual staging app deploy 입니다. 인프라 프로비저닝 뒤 docker-compose 앱 배포까지 수행했고, DB 자동화는 제외했습니다.",
             )
-            task_manager.update_progress(
+            if deploy_status == "success":
+                task_manager.update_progress(
+                    task_id,
+                    100.0,
+                    text="Linked staging deploy completed",
+                    source="phase",
+                )
+                task_manager.update_status(task_id, TaskStatus.SUCCESS)
+                task_manager.append_log(task_id, "=== GitLab staging deploy wrapper 완료 ===")
+                return
+
+            task_manager.update_status(task_id, TaskStatus.FAILED)
+            task_manager.append_log(
                 task_id,
-                100.0,
-                text="Request recorded",
-                source="phase",
+                "GitLab staging wrapper 실패: linked staging deploy task did not succeed.",
             )
-            task_manager.update_status(task_id, TaskStatus.SUCCESS)
-            task_manager.append_log(task_id, "=== Staging deploy request recording 완료 ===")
         except Exception as exc:
             task_manager.update_status(task_id, TaskStatus.FAILED)
             task_manager.append_log(
                 task_id,
-                f"Staging deploy request recording 실패: {exc}",
+                f"GitLab staging wrapper 실패: {exc}",
             )
 
     def _fetch_projects(self, settings: GitLabSettings) -> list[dict[str, Any]]:
@@ -510,6 +693,101 @@ class GitLabInventoryService:
         if not isinstance(project_payload, dict):
             raise GitLabProjectCreateError("GitLab API returned an unexpected project payload.")
         return project_payload
+
+    def _seed_project_manifest_draft(
+        self,
+        *,
+        settings: GitLabSettings,
+        project_payload: dict[str, Any],
+        initialize_with_readme: bool,
+    ) -> dict[str, Any]:
+        if not initialize_with_readme:
+            return {"seeded": False, "message": None}
+
+        project_id = project_payload.get("id")
+        default_branch = str(project_payload.get("default_branch") or "").strip()
+        if project_id is None or not default_branch:
+            return {
+                "seeded": False,
+                "message": (
+                    "프로젝트는 생성되었지만 기본 브랜치를 확인할 수 없어 "
+                    ".heimdall/project.yaml draft는 자동 생성하지 못했습니다."
+                ),
+            }
+
+        session = self._create_gitlab_session(settings)
+        encoded_path = quote(MANIFEST_FILE_PATH, safe="")
+        url = urljoin(
+            f"{settings.base_url}/",
+            f"api/v4/projects/{int(project_id)}/repository/files/{encoded_path}",
+        )
+        content = self._build_project_manifest_draft(project_payload)
+
+        try:
+            self._request_gitlab(
+                session=session,
+                method="POST",
+                url=url,
+                settings=settings,
+                data={
+                    "branch": default_branch,
+                    "content": content,
+                    "commit_message": "Add Heimdall bootstrap draft manifest",
+                },
+                error_cls=GitLabProjectCreateError,
+            )
+            return {
+                "seeded": True,
+                "message": (
+                    "기본 .heimdall/project.yaml draft를 생성했습니다. "
+                    "이 초안은 아직 deploy-ready가 아니며 "
+                    "runtime, deploy.compose_file, deploy.app_port, "
+                    "deploy.healthcheck_path를 repo에서 채워야 합니다."
+                ),
+            }
+        except GitLabProjectCreateError as exc:
+            return {
+                "seeded": False,
+                "message": (
+                    "프로젝트는 생성되었지만 .heimdall/project.yaml draft 자동 생성에는 실패했습니다: "
+                    f"{exc}"
+                ),
+            }
+
+    def _build_project_manifest_draft(self, project_payload: dict[str, Any]) -> str:
+        manifest_name = str(project_payload.get("path") or project_payload.get("name") or "app").strip()
+        payload = {
+            "name": manifest_name,
+            "runtime": "unknown",
+            "deploy": {
+                "strategy": "docker-compose",
+            },
+            "database": {
+                "required": False,
+            },
+            "environments": {
+                "staging": {
+                    "enabled": True,
+                }
+            },
+        }
+        content = yaml.safe_dump(
+            payload,
+            allow_unicode=True,
+            sort_keys=False,
+        )
+        return (
+            "# Heimdall bootstrap draft\n"
+            "# This draft is intentionally incomplete.\n"
+            "# Fill runtime, deploy.compose_file, deploy.app_port, and deploy.healthcheck_path\n"
+            "# before relying on this manifest for app deployment.\n"
+            "# Example placeholders:\n"
+            "# deploy:\n"
+            "#   compose_file: deploy/docker-compose.yml\n"
+            "#   app_port: 3000\n"
+            "#   healthcheck_path: /health\n\n"
+            f"{content}"
+        )
 
     def _create_gitlab_session(self, settings: GitLabSettings) -> requests.Session:
         session = requests.Session()
@@ -625,6 +903,27 @@ class GitLabInventoryService:
         migration_command = str(payload.get("migration_command") or "").strip() or None
         deploy_branch = str(payload.get("deploy_branch") or "").strip()
         bootstrap_strategy = str(payload.get("bootstrap_strategy") or "").strip().lower()
+        staging_server_name = self._normalize_optional_string(payload.get("staging_server_name"))
+        staging_server_id = self._normalize_optional_string(payload.get("staging_server_id"))
+        staging_template_id = self._normalize_optional_string(payload.get("staging_template_id"))
+        staging_storage_id = self._normalize_optional_string(payload.get("staging_storage_id"))
+        staging_network_ids = self._normalize_string_list(payload.get("staging_network_ids"))
+        staging_cpu_cores = self._normalize_optional_positive_int(
+            payload.get("staging_cpu_cores"),
+            "staging_cpu_cores",
+        )
+        staging_memory_gb = self._normalize_optional_positive_int(
+            payload.get("staging_memory_gb"),
+            "staging_memory_gb",
+        )
+        staging_disk_size_gb = self._normalize_optional_positive_int(
+            payload.get("staging_disk_size_gb"),
+            "staging_disk_size_gb",
+        )
+        staging_vm_ip = self._normalize_optional_string(payload.get("staging_vm_ip"))
+        staging_vm_gateway = self._normalize_optional_string(payload.get("staging_vm_gateway"))
+        staging_ansible_packages = self._normalize_string_list(payload.get("staging_ansible_packages"))
+        staging_ansible_roles = self._normalize_string_list(payload.get("staging_ansible_roles"))
         notes = str(payload.get("notes") or "").strip() or None
 
         if ready_for_bootstrap and not staging_enabled:
@@ -650,6 +949,13 @@ class GitLabInventoryService:
                     "database_mode must be one of: shared-cluster, dedicated-instance."
                 )
 
+        if bool(staging_vm_ip) != bool(staging_vm_gateway):
+            raise GitLabProjectSettingsError(
+                "staging_vm_ip and staging_vm_gateway must be provided together."
+            )
+        if staging_vm_ip is not None and staging_vm_gateway is not None:
+            self._validate_static_network_pair(staging_vm_ip, staging_vm_gateway)
+
         return {
             "staging_enabled": staging_enabled,
             "ready_for_bootstrap": ready_for_bootstrap,
@@ -659,6 +965,18 @@ class GitLabInventoryService:
             "migration_command": migration_command,
             "deploy_branch": deploy_branch,
             "bootstrap_strategy": bootstrap_strategy,
+            "staging_server_name": staging_server_name,
+            "staging_server_id": staging_server_id,
+            "staging_template_id": staging_template_id,
+            "staging_storage_id": staging_storage_id,
+            "staging_network_ids": staging_network_ids,
+            "staging_cpu_cores": staging_cpu_cores,
+            "staging_memory_gb": staging_memory_gb,
+            "staging_disk_size_gb": staging_disk_size_gb,
+            "staging_vm_ip": staging_vm_ip,
+            "staging_vm_gateway": staging_vm_gateway,
+            "staging_ansible_packages": staging_ansible_packages,
+            "staging_ansible_roles": staging_ansible_roles,
             "notes": notes,
         }
 
@@ -668,7 +986,11 @@ class GitLabInventoryService:
         project_settings: GitLabProjectSettings | None,
         manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
-        manifest = self._load_project_manifest_status(project=project, manifest_context=manifest_context)
+        manifest = self._load_project_manifest_status(
+            project=project,
+            manifest_context=manifest_context,
+            ref=self._resolve_manifest_ref(project, project_settings),
+        )
         return {
             "gitlab_project_id": project.gitlab_project_id,
             "name": project.name,
@@ -703,6 +1025,18 @@ class GitLabInventoryService:
             "migration_command": project_settings.migration_command,
             "deploy_branch": project_settings.deploy_branch,
             "bootstrap_strategy": project_settings.bootstrap_strategy,
+            "staging_server_name": project_settings.staging_server_name,
+            "staging_server_id": project_settings.staging_server_id,
+            "staging_template_id": project_settings.staging_template_id,
+            "staging_storage_id": project_settings.staging_storage_id,
+            "staging_network_ids": list(project_settings.staging_network_ids or []),
+            "staging_cpu_cores": project_settings.staging_cpu_cores,
+            "staging_memory_gb": project_settings.staging_memory_gb,
+            "staging_disk_size_gb": project_settings.staging_disk_size_gb,
+            "staging_vm_ip": project_settings.staging_vm_ip,
+            "staging_vm_gateway": project_settings.staging_vm_gateway,
+            "staging_ansible_packages": list(project_settings.staging_ansible_packages or []),
+            "staging_ansible_roles": list(project_settings.staging_ansible_roles or []),
             "updated_at": project_settings.updated_at,
         }
 
@@ -714,7 +1048,11 @@ class GitLabInventoryService:
         manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
         summary = self._serialize_project_settings_summary(project_settings)
-        manifest = self._load_project_manifest_status(project=project, manifest_context=manifest_context)
+        manifest = self._load_project_manifest_status(
+            project=project,
+            manifest_context=manifest_context,
+            ref=self._resolve_manifest_ref(project, project_settings),
+        )
         return {
             "gitlab_project_id": project_id,
             "configuration_status": self._derive_configuration_status(project_settings),
@@ -728,10 +1066,37 @@ class GitLabInventoryService:
             "migration_command": project_settings.migration_command if project_settings is not None else None,
             "deploy_branch": project_settings.deploy_branch if project_settings is not None else "main",
             "bootstrap_strategy": project_settings.bootstrap_strategy if project_settings is not None else "merge_request",
+            "staging_server_name": project_settings.staging_server_name if project_settings is not None else None,
+            "staging_server_id": project_settings.staging_server_id if project_settings is not None else None,
+            "staging_template_id": project_settings.staging_template_id if project_settings is not None else None,
+            "staging_storage_id": project_settings.staging_storage_id if project_settings is not None else None,
+            "staging_network_ids": list(project_settings.staging_network_ids or []) if project_settings is not None else [],
+            "staging_cpu_cores": project_settings.staging_cpu_cores if project_settings is not None else None,
+            "staging_memory_gb": project_settings.staging_memory_gb if project_settings is not None else None,
+            "staging_disk_size_gb": project_settings.staging_disk_size_gb if project_settings is not None else None,
+            "staging_vm_ip": project_settings.staging_vm_ip if project_settings is not None else None,
+            "staging_vm_gateway": project_settings.staging_vm_gateway if project_settings is not None else None,
+            "staging_ansible_packages": list(project_settings.staging_ansible_packages or []) if project_settings is not None else [],
+            "staging_ansible_roles": list(project_settings.staging_ansible_roles or []) if project_settings is not None else [],
             "notes": project_settings.notes if project_settings is not None else None,
             "updated_at": project_settings.updated_at if project_settings is not None else None,
             "settings_summary": summary,
         }
+
+    def _resolve_manifest_ref(
+        self,
+        project: GitLabProject,
+        project_settings: GitLabProjectSettings | None,
+    ) -> str:
+        deploy_branch = (
+            str(project_settings.deploy_branch).strip()
+            if project_settings is not None
+            else ""
+        )
+        if deploy_branch:
+            return deploy_branch
+        default_branch = str(project.default_branch or "").strip()
+        return default_branch or "HEAD"
 
     def _derive_configuration_status(
         self,
@@ -761,23 +1126,105 @@ class GitLabInventoryService:
             "session": self._create_gitlab_session(settings),
         }
 
+    def _normalize_optional_string(self, value: Any) -> str | None:
+        text = str(value or "").strip()
+        return text or None
+
+    def _normalize_optional_positive_int(self, value: Any, field_name: str) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError) as exc:
+            raise GitLabProjectSettingsError(f"{field_name} must be a positive integer.") from exc
+        if normalized <= 0:
+            raise GitLabProjectSettingsError(f"{field_name} must be a positive integer.")
+        return normalized
+
+    def _normalize_string_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            raw_items = value.replace("\n", ",").split(",")
+        elif isinstance(value, list):
+            raw_items = value
+        else:
+            raise GitLabProjectSettingsError(
+                "List fields must be arrays or comma-separated strings."
+            )
+
+        normalized: list[str] = []
+        for item in raw_items:
+            text = str(item or "").strip()
+            if text:
+                normalized.append(text)
+        return normalized
+
+    def _validate_static_network_pair(self, vm_ip: str, vm_gateway: str) -> None:
+        if "/" not in vm_ip:
+            raise GitLabProjectSettingsError(
+                "staging_vm_ip must be an IPv4 host CIDR like 192.168.2.100/24."
+            )
+
+        try:
+            parsed_ip = ip_interface(vm_ip)
+        except ValueError as exc:
+            raise GitLabProjectSettingsError(
+                "staging_vm_ip must be an IPv4 host CIDR like 192.168.2.100/24."
+            ) from exc
+
+        if not isinstance(parsed_ip, IPv4Interface):
+            raise GitLabProjectSettingsError(
+                "staging_vm_ip must be an IPv4 host CIDR like 192.168.2.100/24."
+            )
+
+        try:
+            parsed_gateway = ip_address(vm_gateway)
+        except ValueError as exc:
+            raise GitLabProjectSettingsError(
+                "staging_vm_gateway must be a valid IPv4 address like 192.168.2.1."
+            ) from exc
+
+        if not isinstance(parsed_gateway, IPv4Address):
+            raise GitLabProjectSettingsError(
+                "staging_vm_gateway must be a valid IPv4 address like 192.168.2.1."
+            )
+
     def _load_project_manifest_status(
         self,
         project: GitLabProject,
         manifest_context: dict[str, Any],
+        ref: str | None = None,
     ) -> dict[str, str]:
+        manifest = self._load_project_manifest(
+            project=project,
+            manifest_context=manifest_context,
+            ref=ref,
+        )
+        return {
+            "manifest_status": str(manifest["manifest_status"]),
+            "manifest_summary": str(manifest["manifest_summary"]),
+        }
+
+    def _load_project_manifest(
+        self,
+        project: GitLabProject,
+        manifest_context: dict[str, Any],
+        ref: str | None = None,
+    ) -> dict[str, Any]:
         if not manifest_context.get("available"):
             return {
                 "manifest_status": "unchecked",
                 "manifest_summary": str(
                     manifest_context.get("error") or "GitLab manifest validation is unavailable."
                 ),
+                "manifest_payload": None,
             }
 
         settings = manifest_context["settings"]
         session = manifest_context["session"]
         encoded_path = quote(MANIFEST_FILE_PATH, safe="")
-        ref = str(project.default_branch or "HEAD")
+        resolved_ref = str(ref or project.default_branch or "HEAD").strip() or "HEAD"
         url = urljoin(
             f"{settings.base_url}/",
             f"api/v4/projects/{project.gitlab_project_id}/repository/files/{encoded_path}/raw",
@@ -787,20 +1234,22 @@ class GitLabInventoryService:
             response = session.request(
                 method="GET",
                 url=url,
-                params={"ref": ref},
+                params={"ref": resolved_ref},
                 timeout=(5, 30),
                 verify=settings.verify_ssl,
             )
             if response.status_code == 404:
                 return {
                     "manifest_status": "missing",
-                    "manifest_summary": f"{MANIFEST_FILE_PATH} was not found on ref {ref}.",
+                    "manifest_summary": f"{MANIFEST_FILE_PATH} was not found on ref {resolved_ref}.",
+                    "manifest_payload": None,
                 }
             response.raise_for_status()
         except requests.RequestException as exc:
             return {
                 "manifest_status": "unchecked",
                 "manifest_summary": self._map_gitlab_request_error(exc),
+                "manifest_payload": None,
             }
 
         try:
@@ -809,6 +1258,7 @@ class GitLabInventoryService:
             return {
                 "manifest_status": "invalid",
                 "manifest_summary": f"{MANIFEST_FILE_PATH} YAML parse error: {exc}",
+                "manifest_payload": None,
             }
 
         validation_error = self._validate_manifest_payload(payload)
@@ -816,11 +1266,13 @@ class GitLabInventoryService:
             return {
                 "manifest_status": "invalid",
                 "manifest_summary": validation_error,
+                "manifest_payload": payload,
             }
 
         return {
             "manifest_status": "valid",
-            "manifest_summary": f"{MANIFEST_FILE_PATH} passed the minimum staging validation on ref {ref}.",
+            "manifest_summary": f"{MANIFEST_FILE_PATH} passed the minimum staging validation on ref {resolved_ref}.",
+            "manifest_payload": payload,
         }
 
     def _validate_manifest_payload(self, payload: Any) -> str | None:
@@ -838,6 +1290,27 @@ class GitLabInventoryService:
         deploy = payload.get("deploy")
         if not isinstance(deploy, dict) or deploy.get("strategy") != "docker-compose":
             return "Manifest validation failed: deploy.strategy must be docker-compose."
+        compose_file = self._normalize_compose_file_path(deploy.get("compose_file"))
+        if compose_file is None:
+            return "Manifest validation failed: deploy.compose_file must be a non-empty string."
+        if compose_file.startswith("/") or ".." in PurePosixPath(compose_file).parts:
+            return (
+                "Manifest validation failed: deploy.compose_file must be a relative repo path "
+                "without '..'."
+            )
+        app_port = deploy.get("app_port")
+        if isinstance(app_port, bool) or not isinstance(app_port, int) or app_port <= 0:
+            return "Manifest validation failed: deploy.app_port must be a positive integer."
+        healthcheck_path = deploy.get("healthcheck_path")
+        if (
+            not isinstance(healthcheck_path, str)
+            or not healthcheck_path.strip()
+            or not healthcheck_path.startswith("/")
+        ):
+            return (
+                "Manifest validation failed: deploy.healthcheck_path must be "
+                "a non-empty path starting with /."
+            )
 
         environments = payload.get("environments")
         staging = environments.get("staging") if isinstance(environments, dict) else None
@@ -850,6 +1323,22 @@ class GitLabInventoryService:
                 return "Manifest validation failed: database.engine must be postgres when database.required is true."
 
         return None
+
+    def _normalize_compose_file_path(self, value: Any) -> str | None:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        normalized = str(PurePosixPath(raw))
+        if normalized in {"", "."}:
+            return None
+        return normalized
+
+    def _build_app_project_slug(self, value: str) -> str:
+        lowered = re.sub(r"[^a-z0-9]+", "-", str(value or "").strip().lower())
+        normalized = lowered.strip("-")
+        if not normalized:
+            normalized = "heimdall-app"
+        return normalized[:48]
 
     def _upsert_project_record(
         self,

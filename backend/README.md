@@ -36,7 +36,7 @@ Heimdall 관점에서는 Proxmox/Terraform/Ansible 이 VM engine 이고, GitLab 
 - GitLab inventory 조회 / 수동 sync
 - GitLab namespace 조회 / 프로젝트 생성
 - GitLab 프로젝트별 설정 조회 / 저장
-- GitLab 프로젝트별 수동 staging deploy 요청 기록 / task 추적 시작
+- GitLab 프로젝트별 수동 staging infra provisioning 시작 / wrapper task 추적
 - GitLab 프로젝트별 `.heimdall/project.yaml` 최소 검증 상태 조회
 - GitLab system hook 수신 후 inventory sync
 - instance `terminate`
@@ -45,8 +45,8 @@ Heimdall 관점에서는 Proxmox/Terraform/Ansible 이 VM engine 이고, GitLab 
 - LLM Assistant
 
 현재 GitLab 관련 기능은 실제 사용 가능하지만 선택 사항이다.
-bootstrap 실행은 아직 이 백엔드에서 제공하지 않고, `Deploy Staging` 의 현재 슬라이스는 valid `.heimdall/project.yaml` 을 통과한 프로젝트만 수동 요청을 task로 기록하는 수준까지만 제공한다.
-실제 VM/DB/Terraform/Ansible 오케스트레이션은 다음 단계에서 연결한다.
+bootstrap 실행은 아직 이 백엔드에서 제공하지 않고, `Deploy Staging` 의 현재 슬라이스는 valid `.heimdall/project.yaml` 과 저장된 staging infra profile을 통과한 프로젝트만 수동으로 시작할 수 있다.
+이 경로는 수동 staging app deploy 슬라이스이며, 실제 VM/Terraform/Ansible 배포 뒤 GitLab archive 기반 `docker compose` 앱 배포와 HTTP healthcheck 확인까지 수행한다. DB 자동화는 아직 제외한다.
 
 ## 상태 저장
 

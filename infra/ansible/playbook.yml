@@ -16,6 +16,12 @@
     # extra_vars로 전달된 변수를 로컬 변수로 매핑 (순환 참조 방지)
     pkg_list: "{{ packages_to_install | default([]) }}"
     role_list: "{{ roles_to_apply | default([]) }}"
+    deploy_app_requested: "{{ deploy_app_enabled | default(false) | bool }}"
+    deploy_project_slug_value: "{{ deploy_project_slug | default('heimdall-app') }}"
+    deploy_release_id_value: "{{ deploy_release_id | default('manual') }}"
+    deploy_root_dir: "/opt/heimdall/apps/{{ deploy_project_slug_value }}"
+    deploy_release_dir: "{{ deploy_root_dir }}/releases/{{ deploy_release_id_value }}"
+    deploy_current_dir: "{{ deploy_root_dir }}/current"
 
   pre_tasks:
     - name: Wait for SSH to become ready
@@ -128,6 +134,34 @@
         state: started
         enabled: yes
       when: "'docker' in pkg_list or 'docker-compose' in pkg_list"
+
+    - name: Ensure Docker runtime for app deploy (Debian/Ubuntu)
+      apt:
+        name:
+          - docker.io
+          - docker-compose
+        state: present
+        lock_timeout: 600
+      when:
+        - deploy_app_requested
+        - ansible_os_family == "Debian"
+
+    - name: Ensure Docker runtime for app deploy (RedHat/CentOS)
+      yum:
+        name:
+          - docker
+          - docker-compose
+        state: present
+      when:
+        - deploy_app_requested
+        - ansible_os_family == "RedHat"
+
+    - name: Ensure Docker service for app deploy
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+      when: deploy_app_requested
 
     # Node.js 설치 (특수 처리)
     - name: Install Node.js via NodeSource (Debian/Ubuntu)
@@ -423,6 +457,103 @@
           when: ansible_os_family == "RedHat"
       when: "'firewall' in role_list"
 
+    - name: Manual staging app deploy
+      block:
+        - name: Validate app deploy inputs
+          assert:
+            that:
+              - deploy_bundle_local_path is defined
+              - (deploy_bundle_local_path | string | trim) != ""
+              - deploy_compose_file is defined
+              - (deploy_compose_file | string | trim) != ""
+              - deploy_app_port is defined
+              - (deploy_app_port | int) > 0
+              - deploy_healthcheck_path is defined
+              - (deploy_healthcheck_path | string | regex_search('^/')) is not none
+            fail_msg: "App deploy extra vars are incomplete."
+
+        - name: Ensure deployment directories exist
+          file:
+            path: "{{ item }}"
+            state: directory
+            mode: "0755"
+          loop:
+            - "{{ deploy_root_dir }}"
+            - "{{ deploy_root_dir }}/releases"
+            - "{{ deploy_release_dir }}"
+
+        - name: Extract GitLab archive into release directory
+          unarchive:
+            src: "{{ deploy_bundle_local_path }}"
+            dest: "{{ deploy_release_dir }}"
+            remote_src: false
+            extra_opts:
+              - --strip-components=1
+
+        - name: Check compose file exists in extracted release
+          stat:
+            path: "{{ deploy_release_dir }}/{{ deploy_compose_file }}"
+          register: deploy_compose_file_stat
+
+        - name: Fail if compose file is missing
+          fail:
+            msg: "Compose file was not found after archive extraction: {{ deploy_compose_file }}"
+          when: not deploy_compose_file_stat.stat.exists
+
+        - name: Point current release symlink at extracted release
+          file:
+            src: "{{ deploy_release_dir }}"
+            dest: "{{ deploy_current_dir }}"
+            state: link
+            force: true
+
+        - name: Detect docker compose command
+          shell: |
+            if docker compose version >/dev/null 2>&1; then
+              echo "docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              echo "docker-compose"
+            else
+              exit 1
+            fi
+          args:
+            executable: /bin/bash
+          register: deploy_compose_command
+          changed_when: false
+
+        - name: Run docker compose app deployment
+          shell: >
+            {{ deploy_compose_command.stdout | trim }}
+            -p {{ deploy_project_slug_value | quote }}
+            -f {{ deploy_compose_file | quote }}
+            up -d --build
+          args:
+            chdir: "{{ deploy_current_dir }}"
+            executable: /bin/bash
+          register: deploy_compose_up
+          changed_when: >-
+            'Creating' in (deploy_compose_up.stdout | default(''))
+            or 'Recreating' in (deploy_compose_up.stdout | default(''))
+            or 'Starting' in (deploy_compose_up.stdout | default(''))
+            or 'Building' in (deploy_compose_up.stdout | default(''))
+
+        - name: Wait for app healthcheck endpoint
+          uri:
+            url: "http://127.0.0.1:{{ deploy_app_port }}{{ deploy_healthcheck_path }}"
+            method: GET
+            status_code:
+              - 200
+              - 204
+          register: deploy_healthcheck
+          retries: 24
+          delay: 5
+          until: deploy_healthcheck.status in [200, 204]
+      when: deploy_app_requested
+
     - name: Playbook execution completed
       debug:
-        msg: "Playbook execution completed successfully. Installed packages: {{ pkg_list }}, Applied roles: {{ role_list }}"
+        msg: >-
+          Playbook execution completed successfully.
+          Installed packages: {{ pkg_list }},
+          Applied roles: {{ role_list }},
+          App deploy requested: {{ deploy_app_requested }}

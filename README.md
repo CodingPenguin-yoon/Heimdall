@@ -10,8 +10,10 @@ Today Heimdall already includes:
 - GitLab project creation
 - GitLab project settings
 - GitLab system hook handling
+- Manual `Deploy Staging` for staging infra plus app deployment
 - Proxmox template-clone VM deployment
 - Terraform and Ansible provisioning flow
+- GitLab archive delivery and `docker compose` app rollout on the staging VM
 - Instance lifecycle operations and resize
 - Task Board, SSE status streaming, and platform state persistence
 
@@ -22,7 +24,7 @@ This means the current product is not just a VM launcher. It already has the fir
 The following are not yet implemented and should be read as planned capability, not current behavior:
 
 - Bootstrap automation
-- `Deploy Staging`
+- GitLab merge/webhook-driven redeploys
 - DB provisioner / automatic per-environment database provisioning
 - Production environment workflow
 - Reverse-proxy and domain automation
