@@ -179,6 +179,8 @@ async def get_instances():
                     "node": vm.get("node"),
                     "disk_gb": vm.get("disk_gb", 0),
                     "disks": vm.get("disks", []),
+                    "primary_ip": vm.get("primary_ip"),
+                    "ip_addresses": vm.get("ip_addresses", []),
                 }
             )
 

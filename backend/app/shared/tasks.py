@@ -363,6 +363,9 @@ class TaskManager:
                 self._tasks[task_id].get("status", "")
             ).lower()
 
+            if normalized_status not in self._DONE_STATUSES and clamped >= 100.0:
+                clamped = 99.0
+
             # proxmox/terraform 로그 기반 퍼센트는 실제 진행률로 간주하여 그대로 반영한다.
             # 다만 완료 상태(success/failed 등) 이후에는 진행률 역행을 막는다.
             if incoming_source in self._DETAILED_PROGRESS_SOURCES:
@@ -370,13 +373,17 @@ class TaskManager:
                     next_progress = current
                 else:
                     next_progress = clamped
-            # 상세 소스에서 phase 소스로 다시 덮일 때 낮은 값으로 내려가는 것은 방지한다.
+            # 상세 소스(terraform/proxmox)가 100%를 찍은 뒤 다음 상위 phase로 넘어갈 때는
+            # 이후 단계(예: Ansible) 진행률이 다시 보일 수 있게 phase 값을 허용한다.
             elif (
                 incoming_source == "phase"
                 and current_source in self._DETAILED_PROGRESS_SOURCES
                 and clamped < current
             ):
-                next_progress = current
+                if normalized_status not in self._DONE_STATUSES:
+                    next_progress = clamped
+                else:
+                    next_progress = current
             else:
                 next_progress = max(current, clamped)
 

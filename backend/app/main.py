@@ -16,6 +16,7 @@ from app.domains.proxmox.router import router as proxmox_router
 from app.domains.llm.router import router as llm_router
 from app.domains.task.router import router as task_router
 from app.domains.gitlab.router import router as gitlab_router
+from app.domains.staging.router import router as staging_router
 from app.domains.webhooks.router import router as webhook_router
 
 # 환경 변수 로드 (.env 파일에서)
@@ -51,6 +52,7 @@ app.include_router(task_router, prefix="/api", tags=["status", "logs"])
 app.include_router(proxmox_router, prefix="/api", tags=["proxmox"])
 app.include_router(llm_router, prefix="/api", tags=["llm"])
 app.include_router(gitlab_router, prefix="/api", tags=["gitlab"])
+app.include_router(staging_router, prefix="/api", tags=["staging"])
 app.include_router(webhook_router, prefix="/api", tags=["webhooks"])
 
 

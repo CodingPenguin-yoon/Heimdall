@@ -21,6 +21,7 @@ const createInitialDeployConfig = () => ({
   serverName: '',
   selectedPackages: [],
   selectedRoles: [],
+  createAsStagingHost: false,
   ipMode: 'dhcp',
   vmIp: '',
   vmGateway: '',
@@ -109,9 +110,12 @@ function App() {
         memory_gb: deployConfig.memory ? parseInt(deployConfig.memory) : undefined,
         storage_id: deployConfig.selectedStorageId,
         network_ids: deployConfig.selectedNetworkIds,
-        server_name: deployConfig.serverName || `instance-${Date.now()}`,
+        server_name:
+          deployConfig.serverName ||
+          (deployConfig.createAsStagingHost ? `staging-host-${Date.now()}` : `instance-${Date.now()}`),
         ansible_packages: deployConfig.selectedPackages || [],
         ansible_roles: deployConfig.selectedRoles || [],
+        create_as_staging_host: deployConfig.createAsStagingHost,
         // Static IP 모드일 때만 IP 전달
         vm_ip: deployConfig.ipMode === 'static' ? deployConfig.vmIp : undefined,
         vm_gateway: deployConfig.ipMode === 'static' ? deployConfig.vmGateway : undefined,

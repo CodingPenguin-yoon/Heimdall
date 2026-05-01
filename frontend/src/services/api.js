@@ -63,6 +63,7 @@ export const deployInfrastructure = async (config) => {
           ansible_roles: config.ansible_roles || [],
           vm_ip: config.vm_ip,
           vm_gateway: config.vm_gateway,
+          create_as_staging_host: Boolean(config.create_as_staging_host),
         }
       : {
           server_id: config.selectedServerId,
@@ -75,6 +76,7 @@ export const deployInfrastructure = async (config) => {
           network_ids: config.selectedNetworkIds || [],
           ansible_packages: config.selectedPackages || [],
           ansible_roles: config.selectedRoles || [],
+          create_as_staging_host: Boolean(config.createAsStagingHost),
         }
     const response = await apiClient.post('/deploy', payload)
     return response
@@ -251,6 +253,16 @@ export const getInstances = async () => {
     return response
   } catch (error) {
     console.error('Get instances API error:', error)
+    throw error
+  }
+}
+
+export const getStagingHosts = async () => {
+  try {
+    const response = await apiClient.get('/staging-hosts')
+    return response
+  } catch (error) {
+    console.error('Get staging hosts API error:', error)
     throw error
   }
 }
@@ -454,6 +466,48 @@ export const getGitLabProjectSettings = async (projectId) => {
     return response
   } catch (error) {
     console.error('Get GitLab project settings API error:', error)
+    throw error
+  }
+}
+
+export const previewGitLabProjectSettings = async (projectId, payload) => {
+  try {
+    const response = await apiClient.post(`/gitlab/projects/${projectId}/settings/preview`, payload)
+    return response
+  } catch (error) {
+    console.error('Preview GitLab project settings API error:', error)
+    throw error
+  }
+}
+
+export const getGitLabProjectManifest = async (projectId, ref = null) => {
+  try {
+    const response = await apiClient.get(`/gitlab/projects/${projectId}/manifest`, {
+      params: ref ? { ref } : undefined,
+    })
+    return response
+  } catch (error) {
+    console.error('Get GitLab project manifest API error:', error)
+    throw error
+  }
+}
+
+export const updateGitLabProjectManifest = async (projectId, payload) => {
+  try {
+    const response = await apiClient.put(`/gitlab/projects/${projectId}/manifest`, payload)
+    return response
+  } catch (error) {
+    console.error('Update GitLab project manifest API error:', error)
+    throw error
+  }
+}
+
+export const previewGitLabProjectManifest = async (projectId, payload) => {
+  try {
+    const response = await apiClient.post(`/gitlab/projects/${projectId}/manifest/preview`, payload)
+    return response
+  } catch (error) {
+    console.error('Preview GitLab project manifest API error:', error)
     throw error
   }
 }

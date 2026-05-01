@@ -17,7 +17,24 @@ from fastapi import BackgroundTasks
 from sqlalchemy import select
 
 from app.domains.deploy.service import DeploymentService
-from app.shared.gitlab_settings import GitLabSettings, get_gitlab_settings
+from app.domains.staging.service import StagingHostRegistryService
+from app.shared.gitlab_settings import (
+    ALLOWED_DEPLOYMENT_ENVIRONMENTS,
+    DEPLOYMENT_ENV_PRODUCTION,
+    DEPLOYMENT_ENV_STAGING,
+    GitLabSettings,
+    STAGING_ENV_DEDICATED_VM,
+    STAGING_ENV_SHARED_HOST,
+    StagingDedicatedVmSettings,
+    StagingSharedHostSettings,
+    get_deployment_environment_catalog,
+    get_environment_port_range,
+    get_gitlab_settings,
+    get_staging_dedicated_vm_settings,
+    get_staging_environment_catalog,
+    get_staging_shared_host_settings,
+    normalize_deployment_environment,
+)
 from app.shared.platform_db import create_platform_engine, create_session_factory
 from app.shared.platform_models import GitLabProject, GitLabProjectSettings, PlatformMetadata
 from app.shared.tasks import TaskStatus, task_manager
@@ -27,6 +44,8 @@ GITLAB_SYNC_METADATA_KEY = "gitlab_projects_sync"
 ALLOWED_DATABASE_ENGINES = {"postgres"}
 ALLOWED_DATABASE_MODES = {"shared-cluster", "dedicated-instance"}
 ALLOWED_BOOTSTRAP_STRATEGIES = {"merge_request", "direct_commit", "manual"}
+ALLOWED_STAGING_ENVIRONMENT_KEYS = {STAGING_ENV_SHARED_HOST, STAGING_ENV_DEDICATED_VM}
+ALLOWED_HEALTHCHECK_TYPES = {"http", "tcp", "command", "none"}
 MANIFEST_FILE_PATH = ".heimdall/project.yaml"
 
 
@@ -57,6 +76,7 @@ class GitLabInventoryService:
         self._engine = create_platform_engine()
         self._session_factory = create_session_factory(self._engine)
         self._deployment_service = DeploymentService()
+        self._staging_registry_service = StagingHostRegistryService()
 
     def list_projects(self) -> dict[str, Any]:
         settings = get_gitlab_settings()
@@ -110,6 +130,263 @@ class GitLabInventoryService:
                 manifest_context=manifest_context,
             )
 
+    def get_project_manifest_document(
+        self,
+        project_id: int,
+        ref: str | None = None,
+    ) -> dict[str, Any]:
+        project_id = self._coerce_project_id(project_id)
+        settings = get_gitlab_settings()
+        manifest_context = self._create_manifest_lookup_context(settings)
+
+        with self._session_factory() as session:
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
+            project_settings = session.get(GitLabProjectSettings, project_id)
+            resolved_ref = self._normalize_optional_string(ref) or self._resolve_manifest_ref(
+                project,
+                project_settings,
+            )
+            manifest_snapshot = self._load_project_manifest_document_snapshot(
+                project=project,
+                manifest_context=manifest_context,
+                ref=resolved_ref,
+            )
+            manifest_deploy_summary = self._serialize_manifest_deploy_summary(
+                manifest_snapshot["manifest_payload"]
+            )
+            requested_app_port = self._resolve_requested_app_port(project_settings)
+            manifest_app_port = (
+                manifest_deploy_summary.get("app_port")
+                if isinstance(manifest_deploy_summary, dict)
+                else None
+            )
+            effective_app_port = (
+                requested_app_port if requested_app_port is not None else manifest_app_port
+            )
+            app_port_source = (
+                "settings"
+                if requested_app_port is not None
+                else "manifest" if manifest_app_port is not None else None
+            )
+            draft_content = self._build_project_manifest_draft_for_project(
+                project=project,
+                project_settings=project_settings,
+            )
+            deploy_branch = (
+                project_settings.deploy_branch
+                if project_settings is not None
+                else (project.default_branch or None)
+            )
+
+            return {
+                "gitlab_project_id": project.gitlab_project_id,
+                "path_with_namespace": project.path_with_namespace,
+                "default_branch": project.default_branch,
+                "deploy_branch": deploy_branch,
+                "manifest_ref": manifest_snapshot["manifest_ref"],
+                "manifest_exists": manifest_snapshot["manifest_exists"],
+                "manifest_status": manifest_snapshot["manifest_status"],
+                "manifest_summary": manifest_snapshot["manifest_summary"],
+                "raw_content": manifest_snapshot["raw_content"],
+                "draft_content": draft_content,
+                "manifest_deploy_summary": manifest_deploy_summary,
+                "requested_app_port": requested_app_port,
+                "effective_app_port": effective_app_port,
+                "app_port_source": app_port_source,
+                "database_required": bool(
+                    project_settings.database_required if project_settings is not None else False
+                ),
+            }
+
+    def upsert_project_manifest(
+        self,
+        project_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        project_id = self._coerce_project_id(project_id)
+        settings = get_gitlab_settings()
+        manifest_context = self._create_manifest_lookup_context(settings)
+        if not manifest_context.get("available"):
+            raise GitLabProjectSettingsError(
+                str(
+                    manifest_context.get("error")
+                    or "GitLab manifest read/write is unavailable."
+                )
+            )
+
+        branch = self._normalize_optional_string(payload.get("branch"))
+        if branch is None:
+            raise GitLabProjectSettingsError("branch is required to create or update the manifest.")
+
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise GitLabProjectSettingsError("content must be a non-empty YAML document.")
+
+        try:
+            parsed_payload = yaml.safe_load(content)
+        except yaml.YAMLError as exc:
+            raise GitLabProjectSettingsError(
+                f"{MANIFEST_FILE_PATH} YAML parse error: {exc}"
+            ) from exc
+        if not isinstance(parsed_payload, dict):
+            raise GitLabProjectSettingsError(
+                f"{MANIFEST_FILE_PATH} must contain a YAML object."
+            )
+
+        commit_message = self._normalize_optional_string(payload.get("commit_message"))
+
+        with self._session_factory() as session:
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
+            project_settings = session.get(GitLabProjectSettings, project_id)
+            manifest_snapshot = self._load_project_manifest_document_snapshot(
+                project=project,
+                manifest_context=manifest_context,
+                ref=branch,
+            )
+            manifest_exists = bool(manifest_snapshot["manifest_exists"])
+            self._write_project_manifest_file(
+                project=project,
+                settings=settings,
+                branch=branch,
+                content=content,
+                exists=manifest_exists,
+                commit_message=commit_message,
+            )
+
+        response = self.get_project_manifest_document(project_id, ref=branch)
+        response["write_mode"] = "updated" if response["manifest_exists"] and manifest_exists else "created"
+        response["message"] = (
+            f"{MANIFEST_FILE_PATH} was {'updated' if manifest_exists else 'created'} on branch {branch}."
+        )
+        return response
+
+    def preview_project_manifest_document(
+        self,
+        project_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        project_id = self._coerce_project_id(project_id)
+        content = payload.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise GitLabProjectSettingsError("content must be a non-empty YAML document.")
+
+        with self._session_factory() as session:
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
+            project_settings = session.get(GitLabProjectSettings, project_id)
+
+            try:
+                parsed_payload = yaml.safe_load(content)
+            except yaml.YAMLError as exc:
+                return {
+                    "manifest_status": "invalid",
+                    "manifest_summary": f"{MANIFEST_FILE_PATH} YAML parse error: {exc}",
+                    "manifest_deploy_summary": None,
+                    "requested_app_port": self._resolve_requested_app_port(project_settings),
+                    "effective_app_port": self._resolve_requested_app_port(project_settings),
+                    "app_port_source": "settings"
+                    if self._resolve_requested_app_port(project_settings) is not None
+                    else None,
+                }
+
+            if not isinstance(parsed_payload, dict):
+                return {
+                    "manifest_status": "invalid",
+                    "manifest_summary": f"{MANIFEST_FILE_PATH} must contain a YAML object.",
+                    "manifest_deploy_summary": None,
+                    "requested_app_port": self._resolve_requested_app_port(project_settings),
+                    "effective_app_port": self._resolve_requested_app_port(project_settings),
+                    "app_port_source": "settings"
+                    if self._resolve_requested_app_port(project_settings) is not None
+                    else None,
+                }
+
+            validation_error = self._validate_manifest_payload(parsed_payload)
+            manifest_deploy_summary = self._serialize_manifest_deploy_summary(parsed_payload)
+            requested_app_port = self._resolve_requested_app_port(project_settings)
+            manifest_app_port = (
+                manifest_deploy_summary.get("app_port")
+                if isinstance(manifest_deploy_summary, dict)
+                else None
+            )
+            effective_app_port = (
+                requested_app_port if requested_app_port is not None else manifest_app_port
+            )
+            app_port_source = (
+                "settings"
+                if requested_app_port is not None
+                else "manifest" if manifest_app_port is not None else None
+            )
+            if validation_error is not None:
+                return {
+                    "manifest_status": "invalid",
+                    "manifest_summary": validation_error,
+                    "manifest_deploy_summary": manifest_deploy_summary,
+                    "requested_app_port": requested_app_port,
+                    "effective_app_port": effective_app_port,
+                    "app_port_source": app_port_source,
+                }
+
+            return {
+                "manifest_status": "valid",
+                "manifest_summary": f"{MANIFEST_FILE_PATH} editor content passed the minimum staging validation.",
+                "manifest_deploy_summary": manifest_deploy_summary,
+                "requested_app_port": requested_app_port,
+                "effective_app_port": effective_app_port,
+                "app_port_source": app_port_source,
+            }
+
+    def preview_project_settings_contract(
+        self,
+        project_id: int,
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        project_id = self._coerce_project_id(project_id)
+        normalized_payload = self._normalize_project_settings_payload(payload, preview_only=True)
+        settings = get_gitlab_settings()
+        manifest_context = self._create_manifest_lookup_context(settings)
+
+        with self._session_factory() as session:
+            project = session.get(GitLabProject, project_id)
+            if project is None:
+                raise GitLabProjectNotFoundError(f"GitLab project {project_id} was not found.")
+            project_settings = session.get(GitLabProjectSettings, project_id)
+            manifest = self._load_project_manifest(
+                project=project,
+                manifest_context=manifest_context,
+                ref=self._resolve_manifest_ref(project, project_settings),
+            )
+            manifest_deploy_summary = self._serialize_manifest_deploy_summary(manifest["manifest_payload"])
+            contract_preview = self._build_environment_contract_preview(
+                project=project,
+                project_settings=project_settings,
+                manifest_status=manifest["manifest_status"],
+                manifest_deploy_summary=manifest_deploy_summary,
+                deployment_environment=normalized_payload["deployment_environment"],
+                deployment_pool_key=normalized_payload["deployment_pool_key"],
+                requested_app_port=normalized_payload["requested_app_port"],
+                database_required=project_settings.database_required if project_settings is not None else False,
+                live_preview=True,
+            )
+            return {
+                "deployment_environment": contract_preview["deployment_environment"],
+                "deployment_environment_options": self._build_deployment_environment_options(),
+                "deployment_pool_key": contract_preview["deployment_pool_key"],
+                "deployment_pool_options": contract_preview["deployment_pool_options"],
+                "deployment_pool_summary": contract_preview["deployment_pool_summary"],
+                "port_range_summary": contract_preview["port_range_summary"],
+                "available_port_options": contract_preview["available_port_options"],
+                "requested_app_port": contract_preview["requested_app_port"],
+                "suggested_app_port": contract_preview["suggested_app_port"],
+                "requested_port_available": contract_preview["requested_port_available"],
+                "readiness_summary": contract_preview["readiness_summary"],
+            }
+
     def upsert_project_settings(self, project_id: int, payload: dict[str, Any]) -> dict[str, Any]:
         project_id = self._coerce_project_id(project_id)
         normalized_payload = self._normalize_project_settings_payload(payload)
@@ -125,6 +402,10 @@ class GitLabInventoryService:
                 project_settings = GitLabProjectSettings(gitlab_project_id=project_id)
                 session.add(project_settings)
 
+            project_settings.deployment_environment = normalized_payload["deployment_environment"]
+            project_settings.deployment_pool_key = normalized_payload["deployment_pool_key"]
+            project_settings.requested_app_port = normalized_payload["requested_app_port"]
+            project_settings.staging_environment_key = normalized_payload["staging_environment_key"]
             project_settings.staging_enabled = normalized_payload["staging_enabled"]
             project_settings.ready_for_bootstrap = normalized_payload["ready_for_bootstrap"]
             project_settings.database_required = normalized_payload["database_required"]
@@ -308,30 +589,44 @@ class GitLabInventoryService:
                 raise GitLabProjectSettingsError(
                     "Project settings must exist before requesting a staging deploy."
                 )
-            if not project_settings.staging_enabled:
-                raise GitLabProjectSettingsError(
-                    "staging_enabled must be true before requesting a staging deploy."
-                )
-            if not project_settings.ready_for_bootstrap:
-                raise GitLabProjectSettingsError(
-                    "ready_for_bootstrap must be true before requesting a staging deploy."
-                )
-            if project_settings.database_required:
-                raise GitLabProjectSettingsError(
-                    "database_required=true projects are not supported yet for Deploy Staging."
-                )
-
             manifest = self._load_project_manifest(
                 project=project,
                 manifest_context=self._create_manifest_lookup_context(get_gitlab_settings()),
                 ref=project_settings.deploy_branch,
             )
-            if manifest["manifest_status"] != "valid":
+            manifest_deploy_summary = self._serialize_manifest_deploy_summary(manifest["manifest_payload"])
+            contract_preview = self._build_environment_contract_preview(
+                project=project,
+                project_settings=project_settings,
+                manifest_status=manifest["manifest_status"],
+                manifest_deploy_summary=manifest_deploy_summary,
+                deployment_environment=self._resolve_deployment_environment(project_settings),
+                deployment_pool_key=self._resolve_deployment_pool_key(project_settings),
+                requested_app_port=self._resolve_requested_app_port(project_settings),
+                database_required=project_settings.database_required,
+                live_preview=True,
+            )
+            readiness_summary = contract_preview["readiness_summary"]
+            deployment_environment = contract_preview["deployment_environment"]
+            deployment_pool_key = contract_preview["deployment_pool_key"]
+            deployment_pool_summary = contract_preview["deployment_pool_summary"] or {}
+            selected_host = deployment_pool_summary.get("selected_host")
+            effective_app_port = contract_preview["effective_app_port"]
+
+            if deployment_environment != DEPLOYMENT_ENV_STAGING:
                 raise GitLabProjectSettingsError(
-                    f"Staging deploy requires a valid {MANIFEST_FILE_PATH}: "
-                    f"{manifest['manifest_summary']}"
+                    "Deploy Staging is only available when the project environment is set to staging."
                 )
-            self._validate_staging_infra_profile(project_settings)
+            if not readiness_summary.get("can_request_staging_deploy"):
+                blocking_reasons = readiness_summary.get("blocking_reasons") or []
+                message = str(blocking_reasons[0] if blocking_reasons else "").strip()
+                raise GitLabProjectSettingsError(message or "Current environment contract is not ready for Deploy Staging.")
+            if not isinstance(selected_host, dict):
+                raise GitLabProjectSettingsError(
+                    "No ready host could be selected from the chosen staging pool."
+                )
+            if isinstance(effective_app_port, bool) or not isinstance(effective_app_port, int) or effective_app_port <= 0:
+                raise GitLabProjectSettingsError("A valid app port is required before requesting Deploy Staging.")
 
             duplicate_task = self._find_live_staging_request(project_id)
             if duplicate_task is not None:
@@ -343,6 +638,11 @@ class GitLabInventoryService:
                 }
 
             task_id = f"gitlab-staging-deploy-{project_id}-{uuid4().hex[:8]}"
+            execution_mode = "pool_host_app_deploy"
+            wrapper_note = (
+                "GitLab staging wrapper task. This slice deploys to the selected staging host pool "
+                "with docker-compose app rollout. DB automation is excluded."
+            )
             task_metadata = {
                 "action": "gitlab_staging_deploy",
                 "environment": "staging",
@@ -350,12 +650,14 @@ class GitLabInventoryService:
                 "gitlab_project_id": project.gitlab_project_id,
                 "path_with_namespace": project.path_with_namespace,
                 "deploy_branch": project_settings.deploy_branch,
-                "execution_mode": "manual_staging_app_deploy",
+                "deployment_environment": deployment_environment,
+                "deployment_pool_key": deployment_pool_key,
+                "staging_environment_key": STAGING_ENV_SHARED_HOST,
+                "execution_mode": execution_mode,
+                "staging_target_mode": "pool_host",
+                "staging_target_summary": deployment_pool_summary,
                 "infra_execution": "starting",
-                "note": (
-                    "GitLab staging wrapper task. This slice runs manual staging infra "
-                    "provisioning plus docker-compose app deployment. DB automation is excluded."
-                ),
+                "note": wrapper_note,
             }
             task_manager.create_task(task_id, metadata=task_metadata)
             task_manager.update_status(task_id, TaskStatus.PENDING)
@@ -369,22 +671,37 @@ class GitLabInventoryService:
             task_manager.append_log(task_id, "=== GitLab staging deploy wrapper 시작 ===")
             task_manager.append_log(
                 task_id,
-                "이 작업은 manual staging app deploy 모드로 실제 인프라 배포 task를 연결합니다.",
+                "이 작업은 현재 staging target 모드에 맞는 실제 배포 task를 연결합니다.",
             )
             task_manager.append_log(
                 task_id,
                 f"대상 프로젝트: {project.path_with_namespace} (GitLab project ID: {project_id})",
             )
             task_manager.append_log(task_id, f"배포 브랜치: {project_settings.deploy_branch}")
+            task_manager.append_log(
+                task_id,
+                f"deployment environment: {deployment_environment}",
+            )
+            task_manager.append_log(
+                task_id,
+                f"deployment pool: {deployment_pool_key}",
+            )
+            task_manager.append_log(
+                task_id,
+                f"selected host: {selected_host.get('name') or selected_host.get('node')} ({selected_host.get('host_ip')})",
+            )
+            task_manager.append_log(task_id, f"effective app port: {effective_app_port}")
 
-            deploy_request = self._build_staging_deploy_request(
-                project,
-                project_settings,
+            deploy_request = self._build_pool_deploy_request(
+                project=project,
+                project_settings=project_settings,
                 manifest_payload=manifest["manifest_payload"],
+                contract_preview=contract_preview,
             )
             deploy_task_id = self._deployment_service.start_deployment_with_request(
                 background_tasks=background_tasks,
                 deploy_request=deploy_request,
+                skip_terraform=True,
             )
             task_manager.update_metadata(
                 deploy_task_id,
@@ -394,14 +711,19 @@ class GitLabInventoryService:
                     "gitlab_project_id": project.gitlab_project_id,
                     "path_with_namespace": project.path_with_namespace,
                     "deploy_branch": project_settings.deploy_branch,
+                    "deployment_environment": deployment_environment,
+                    "deployment_pool_key": deployment_pool_key,
+                    "staging_environment_key": STAGING_ENV_SHARED_HOST,
                     "linked_wrapper_task_id": task_id,
-                    "execution_mode": "manual_staging_app_deploy",
+                    "execution_mode": execution_mode,
+                    "staging_target_mode": "pool_host",
+                    "staging_target_summary": deployment_pool_summary,
                     "app_deploy_enabled": True,
                 },
             )
             task_manager.append_log(
                 deploy_task_id,
-                "GitLab Deploy Staging 연결됨: 실제 인프라 배포 후 docker-compose 앱 배포까지 수행합니다. DB 자동화는 제외됩니다.",
+                "GitLab Deploy Staging 연결됨: 현재 staging target에 대해 docker-compose 앱 배포와 healthcheck까지 수행합니다. DB 자동화는 제외됩니다.",
             )
             task_manager.update_metadata(
                 task_id,
@@ -469,26 +791,200 @@ class GitLabInventoryService:
             return task
         return None
 
-    def _validate_staging_infra_profile(self, project_settings: GitLabProjectSettings) -> None:
-        required_fields = {
-            "staging_server_name": project_settings.staging_server_name,
-            "staging_server_id": project_settings.staging_server_id,
-            "staging_template_id": project_settings.staging_template_id,
-            "staging_storage_id": project_settings.staging_storage_id,
+    def _build_staging_target_context(
+        self,
+        staging_environment_key: str,
+        *,
+        project_settings: GitLabProjectSettings | None = None,
+    ) -> dict[str, Any]:
+        shared_host = get_staging_shared_host_settings()
+        dedicated_vm = get_staging_dedicated_vm_settings()
+
+        if staging_environment_key == STAGING_ENV_SHARED_HOST:
+            if shared_host.host_ip:
+                return {
+                    "staging_environment_key": STAGING_ENV_SHARED_HOST,
+                    "mode": STAGING_ENV_SHARED_HOST,
+                    "available": True,
+                    "summary": {
+                        **shared_host.summary,
+                        "key": STAGING_ENV_SHARED_HOST,
+                        "mode": STAGING_ENV_SHARED_HOST,
+                        "available": True,
+                        "description": "Reuse the existing staging host and deploy only the app bundle.",
+                    },
+                    "shared_host": shared_host,
+                }
+
+            return {
+                "staging_environment_key": STAGING_ENV_SHARED_HOST,
+                "mode": STAGING_ENV_SHARED_HOST,
+                "available": False,
+                "summary": {
+                    "key": STAGING_ENV_SHARED_HOST,
+                    "mode": STAGING_ENV_SHARED_HOST,
+                    "available": False,
+                    "configured": False,
+                    "host_name": None,
+                    "host_ip": None,
+                    "host_user": None,
+                    "label": "Shared staging host (unavailable)",
+                    "description": "Reuse the existing staging host and deploy only the app bundle.",
+                    "validation_error": (
+                        "Selected staging environment 'shared_host' is unavailable because "
+                        "STAGING_SHARED_HOST_IP is not configured."
+                    ),
+                },
+                "shared_host": shared_host,
+            }
+
+        legacy_profile = self._build_legacy_staging_profile(project_settings)
+        if dedicated_vm.is_configured:
+            return {
+                "staging_environment_key": STAGING_ENV_DEDICATED_VM,
+                "mode": STAGING_ENV_DEDICATED_VM,
+                "available": True,
+                "source": "system_managed",
+                "summary": {
+                    **dedicated_vm.summary,
+                    "key": STAGING_ENV_DEDICATED_VM,
+                    "mode": STAGING_ENV_DEDICATED_VM,
+                    "available": True,
+                    "description": "Provision a system-managed dedicated VM through Terraform, then deploy the app.",
+                },
+                "shared_host": shared_host,
+                "dedicated_vm": dedicated_vm,
+                "legacy_profile": legacy_profile,
+            }
+
+        if legacy_profile is not None:
+            return {
+                "staging_environment_key": STAGING_ENV_DEDICATED_VM,
+                "mode": STAGING_ENV_DEDICATED_VM,
+                "available": True,
+                "source": "legacy_project_profile",
+                "summary": {
+                    **legacy_profile,
+                    "key": STAGING_ENV_DEDICATED_VM,
+                    "mode": STAGING_ENV_DEDICATED_VM,
+                    "available": True,
+                    "configured": True,
+                    "label": "Dedicated staging VM · legacy project profile",
+                    "description": "Use the previously saved per-project VM profile until system defaults are configured.",
+                    "validation_error": None,
+                },
+                "shared_host": shared_host,
+                "dedicated_vm": dedicated_vm,
+                "legacy_profile": legacy_profile,
+            }
+
+        return {
+            "staging_environment_key": STAGING_ENV_DEDICATED_VM,
+            "mode": STAGING_ENV_DEDICATED_VM,
+            "available": False,
+            "source": "missing",
+            "summary": {
+                **dedicated_vm.summary,
+                "key": STAGING_ENV_DEDICATED_VM,
+                "mode": STAGING_ENV_DEDICATED_VM,
+                "available": False,
+                "description": "Provision a system-managed dedicated VM through Terraform, then deploy the app.",
+                "validation_error": (
+                    dedicated_vm.validation_error
+                    or (
+                        "Selected staging environment 'dedicated_vm' is unavailable because "
+                        "system-managed dedicated VM defaults are not configured."
+                    )
+                ),
+            },
+            "shared_host": shared_host,
+            "dedicated_vm": dedicated_vm,
+            "legacy_profile": legacy_profile,
         }
-        missing_fields = [
-            field_name for field_name, value in required_fields.items() if not str(value or "").strip()
-        ]
-        network_ids = [
-            str(item).strip() for item in list(project_settings.staging_network_ids or []) if str(item).strip()
-        ]
-        if not network_ids:
-            missing_fields.append("staging_network_ids")
-        if missing_fields:
+
+    def _validate_staging_target(
+        self,
+        project_settings: GitLabProjectSettings,
+        *,
+        staging_target: dict[str, Any],
+    ) -> None:
+        if staging_target["mode"] == STAGING_ENV_SHARED_HOST:
+            if not bool(staging_target.get("available")):
+                validation_error = str(
+                    (staging_target.get("summary") or {}).get("validation_error") or ""
+                ).strip()
+                raise GitLabProjectSettingsError(
+                    validation_error or "Selected staging environment is unavailable."
+                )
+            shared_host = staging_target.get("shared_host")
+            if not isinstance(shared_host, StagingSharedHostSettings) or not shared_host.is_configured:
+                raise GitLabProjectSettingsError("Shared staging host is not configured.")
+            return
+
+        if not bool(staging_target.get("available")):
+            validation_error = str(
+                (staging_target.get("summary") or {}).get("validation_error") or ""
+            ).strip()
             raise GitLabProjectSettingsError(
-                "Staging infra profile is incomplete. Missing required fields: "
-                + ", ".join(missing_fields)
+                validation_error or "Selected staging environment is unavailable."
             )
+
+    def _build_pool_deploy_request(
+        self,
+        *,
+        project: GitLabProject,
+        project_settings: GitLabProjectSettings,
+        manifest_payload: dict[str, Any],
+        contract_preview: dict[str, Any],
+    ) -> dict[str, Any]:
+        deploy_config = manifest_payload.get("deploy") if isinstance(manifest_payload.get("deploy"), dict) else {}
+        pool_summary = dict(contract_preview.get("deployment_pool_summary") or {})
+        selected_host = dict(pool_summary.get("selected_host") or {})
+        effective_app_port = contract_preview.get("effective_app_port")
+        if isinstance(effective_app_port, bool) or not isinstance(effective_app_port, int) or effective_app_port <= 0:
+            raise GitLabProjectSettingsError("A valid app port is required before building the deploy request.")
+        if not selected_host.get("host_ip"):
+            raise GitLabProjectSettingsError("Selected pool does not have a resolved host target.")
+
+        host_name = str(selected_host.get("name") or selected_host.get("node") or "staging-host").strip()
+        host_user = str(selected_host.get("host_user") or "root").strip() or "root"
+        return {
+            "metadata": {
+                "trigger_source": "gitlab",
+                "environment": "staging",
+                "gitlab_project_id": project.gitlab_project_id,
+                "path_with_namespace": project.path_with_namespace,
+                "deploy_branch": project_settings.deploy_branch,
+                "deployment_environment": contract_preview["deployment_environment"],
+                "deployment_pool_key": contract_preview["deployment_pool_key"],
+                "staging_environment_key": STAGING_ENV_SHARED_HOST,
+                "execution_mode": "pool_host_app_deploy",
+                "staging_target_mode": "pool_host",
+                "staging_target_summary": pool_summary,
+            },
+            "gitlab_project_id": project.gitlab_project_id,
+            "path_with_namespace": project.path_with_namespace,
+            "deploy_branch": project_settings.deploy_branch,
+            "deployment_environment": contract_preview["deployment_environment"],
+            "deployment_pool_key": contract_preview["deployment_pool_key"],
+            "staging_environment_key": STAGING_ENV_SHARED_HOST,
+            "app_deploy_enabled": True,
+            "app_project_slug": self._build_app_project_slug(project.path_with_namespace),
+            "app_runtime": str(manifest_payload.get("runtime") or "").strip(),
+            "compose_file": str(self._normalize_compose_file_path(deploy_config.get("compose_file")) or ""),
+            "app_port": int(effective_app_port),
+            **self._build_healthcheck_deploy_values(
+                deploy_config,
+                default_port=int(effective_app_port),
+            ),
+            "staging_target_mode": "pool_host",
+            "server_name": host_name,
+            "target_host_ip": str(selected_host.get("host_ip") or "").strip(),
+            "target_host_name": host_name,
+            "target_host_user": host_user,
+            "ansible_packages": [],
+            "ansible_roles": [],
+        }
 
     def _build_staging_deploy_request(
         self,
@@ -496,47 +992,141 @@ class GitLabInventoryService:
         project_settings: GitLabProjectSettings,
         *,
         manifest_payload: dict[str, Any],
+        staging_target: dict[str, Any],
     ) -> dict[str, Any]:
-        network_ids = [
-            str(item).strip() for item in list(project_settings.staging_network_ids or []) if str(item).strip()
-        ]
         deploy_config = manifest_payload.get("deploy") if isinstance(manifest_payload.get("deploy"), dict) else {}
+        execution_mode = (
+            "shared_staging_host_app_deploy"
+            if staging_target["mode"] == STAGING_ENV_SHARED_HOST
+            else "manual_staging_app_deploy"
+        )
         deploy_request = {
-            "server_name": str(project_settings.staging_server_name or "").strip(),
-            "server_id": str(project_settings.staging_server_id or "").strip(),
-            "template_id": str(project_settings.staging_template_id or "").strip(),
-            "storage_id": str(project_settings.staging_storage_id or "").strip(),
-            "network_ids": network_ids,
-            "disk_size_gb": project_settings.staging_disk_size_gb,
-            "ansible_packages": list(project_settings.staging_ansible_packages or []),
-            "ansible_roles": list(project_settings.staging_ansible_roles or []),
             "metadata": {
                 "trigger_source": "gitlab",
                 "environment": "staging",
                 "gitlab_project_id": project.gitlab_project_id,
                 "path_with_namespace": project.path_with_namespace,
                 "deploy_branch": project_settings.deploy_branch,
-                "execution_mode": "manual_staging_app_deploy",
+                "staging_environment_key": staging_target["staging_environment_key"],
+                "execution_mode": execution_mode,
+                "staging_target_mode": staging_target["mode"],
+                "staging_target_summary": staging_target["summary"],
             },
             "gitlab_project_id": project.gitlab_project_id,
             "path_with_namespace": project.path_with_namespace,
             "deploy_branch": project_settings.deploy_branch,
+            "staging_environment_key": staging_target["staging_environment_key"],
             "app_deploy_enabled": True,
             "app_project_slug": self._build_app_project_slug(project.path_with_namespace),
             "app_runtime": str(manifest_payload.get("runtime") or "").strip(),
             "compose_file": str(self._normalize_compose_file_path(deploy_config.get("compose_file")) or ""),
             "app_port": int(deploy_config.get("app_port")),
-            "healthcheck_path": str(deploy_config.get("healthcheck_path") or "").strip(),
+            **self._build_healthcheck_deploy_values(
+                deploy_config,
+                default_port=int(deploy_config.get("app_port")),
+            ),
+            "staging_target_mode": staging_target["mode"],
         }
-        if project_settings.staging_cpu_cores is not None:
-            deploy_request["cpu_cores"] = project_settings.staging_cpu_cores
-        if project_settings.staging_memory_gb is not None:
-            deploy_request["memory_gb"] = project_settings.staging_memory_gb
+
+        if staging_target["mode"] == STAGING_ENV_SHARED_HOST:
+            shared_host = staging_target["shared_host"]
+            deploy_request.update(
+                {
+                    "server_name": shared_host.host_name,
+                    "target_host_ip": shared_host.host_ip,
+                    "target_host_name": shared_host.host_name,
+                    "target_host_user": shared_host.host_user,
+                    "ansible_packages": [],
+                    "ansible_roles": [],
+                }
+            )
+            return deploy_request
+
+        app_project_slug = self._build_app_project_slug(project.path_with_namespace)
+        target_source = str(staging_target.get("source") or "").strip()
+        if target_source == "legacy_project_profile":
+            profile = dict(staging_target.get("legacy_profile") or {})
+            server_name = str(profile.get("server_name") or "").strip() or self._build_dedicated_vm_server_name(
+                app_project_slug,
+                "staging",
+            )
+            server_id = str(profile.get("server_id") or "").strip()
+            template_id = str(profile.get("template_id") or "").strip()
+            storage_id = str(profile.get("storage_id") or "").strip()
+            network_ids = list(profile.get("network_ids") or [])
+            cpu_cores = profile.get("cpu_cores")
+            memory_gb = profile.get("memory_gb")
+            disk_size_gb = profile.get("disk_size_gb")
+        else:
+            dedicated_vm = staging_target.get("dedicated_vm")
+            if not isinstance(dedicated_vm, StagingDedicatedVmSettings) or not dedicated_vm.is_configured:
+                raise GitLabProjectSettingsError(
+                    "System-managed dedicated VM defaults are not configured."
+                )
+            server_name = self._build_dedicated_vm_server_name(app_project_slug, dedicated_vm.name_suffix)
+            server_id = dedicated_vm.server_id
+            template_id = dedicated_vm.template_id
+            storage_id = dedicated_vm.storage_id
+            network_ids = list(dedicated_vm.network_ids)
+            cpu_cores = dedicated_vm.cpu_cores
+            memory_gb = dedicated_vm.memory_gb
+            disk_size_gb = dedicated_vm.disk_size_gb
+
+        deploy_request.update(
+            {
+                "server_name": server_name,
+                "server_id": server_id,
+                "template_id": template_id,
+                "storage_id": storage_id,
+                "network_ids": network_ids,
+                "disk_size_gb": disk_size_gb,
+                "ansible_packages": [],
+                "ansible_roles": [],
+            }
+        )
+        if cpu_cores is not None:
+            deploy_request["cpu_cores"] = cpu_cores
+        if memory_gb is not None:
+            deploy_request["memory_gb"] = memory_gb
         if project_settings.staging_vm_ip is not None:
             deploy_request["vm_ip"] = project_settings.staging_vm_ip
         if project_settings.staging_vm_gateway is not None:
             deploy_request["vm_gateway"] = project_settings.staging_vm_gateway
         return deploy_request
+
+    def _build_legacy_staging_profile(
+        self,
+        project_settings: GitLabProjectSettings | None,
+    ) -> dict[str, Any] | None:
+        if project_settings is None:
+            return None
+
+        network_ids = [
+            str(item).strip() for item in list(project_settings.staging_network_ids or []) if str(item).strip()
+        ]
+        required_fields = [
+            str(project_settings.staging_server_id or "").strip(),
+            str(project_settings.staging_template_id or "").strip(),
+            str(project_settings.staging_storage_id or "").strip(),
+        ]
+        if not all(required_fields) or not network_ids:
+            return None
+
+        return {
+            "server_name": str(project_settings.staging_server_name or "").strip(),
+            "server_id": str(project_settings.staging_server_id or "").strip(),
+            "template_id": str(project_settings.staging_template_id or "").strip(),
+            "storage_id": str(project_settings.staging_storage_id or "").strip(),
+            "network_ids": network_ids,
+            "cpu_cores": project_settings.staging_cpu_cores,
+            "memory_gb": project_settings.staging_memory_gb,
+            "disk_size_gb": project_settings.staging_disk_size_gb or 50,
+        }
+
+    def _build_dedicated_vm_server_name(self, project_slug: str, name_suffix: str) -> str:
+        normalized_suffix = re.sub(r"[^a-z0-9]+", "-", str(name_suffix or "").strip().lower()).strip("-")
+        final_suffix = normalized_suffix or "staging"
+        return f"{project_slug[:48]}-{final_suffix}"[:63]
 
     def _finalize_staging_deploy_wrapper(
         self,
@@ -545,6 +1135,16 @@ class GitLabInventoryService:
         context: dict[str, Any],
     ) -> None:
         try:
+            wrapper_task = task_manager.get_task_detail(task_id) or {}
+            wrapper_metadata = wrapper_task.get("metadata") or {}
+            staging_environment_key = str(
+                wrapper_metadata.get("staging_environment_key") or STAGING_ENV_DEDICATED_VM
+            ).strip() or STAGING_ENV_DEDICATED_VM
+            execution_mode = str(
+                wrapper_metadata.get("execution_mode") or "manual_staging_app_deploy"
+            ).strip() or "manual_staging_app_deploy"
+            staging_target_mode = str(wrapper_metadata.get("staging_target_mode") or "").strip()
+            staging_target_summary = wrapper_metadata.get("staging_target_summary")
             task_manager.append_log(task_id, "연결된 실제 배포 task 완료를 기다리는 중입니다.")
             task_manager.update_progress(task_id, 25.0, text="Waiting for linked deploy", source="phase")
             deploy_task = None
@@ -572,17 +1172,27 @@ class GitLabInventoryService:
                 task_id,
                 {
                     "request_recorded_at": self._now_iso(),
-                    "execution_mode": "manual_staging_app_deploy",
+                    "staging_environment_key": staging_environment_key,
+                    "execution_mode": execution_mode,
+                    "staging_target_mode": staging_target_mode,
+                    "staging_target_summary": staging_target_summary,
                     "infra_execution": "completed" if deploy_status == "success" else "failed",
                     "linked_deploy_task_id": deploy_task_id,
                     "linked_deploy_status": deploy_task.get("status"),
                     "app_deploy_enabled": True,
                 },
             )
-            task_manager.append_log(
-                task_id,
-                "이 slice는 manual staging app deploy 입니다. 인프라 프로비저닝 뒤 docker-compose 앱 배포까지 수행했고, DB 자동화는 제외했습니다.",
-            )
+            if execution_mode == "shared_staging_host_app_deploy":
+                task_manager.append_log(
+                    task_id,
+                    "이 slice는 shared staging host app deploy 입니다. 기존 staging host에 앱 배포와 healthcheck까지 수행했고, DB 자동화는 제외했습니다.",
+                )
+            else:
+                task_manager.append_log(
+                    task_id,
+                    "이 slice는 manual staging app deploy 입니다. 인프라 프로비저닝 뒤 docker-compose 앱 배포까지 수행했고, DB 자동화는 제외했습니다.",
+                )
+            task_manager.append_log(task_id, f"선택된 staging environment: {staging_environment_key}")
             if deploy_status == "success":
                 task_manager.update_progress(
                     task_id,
@@ -741,8 +1351,8 @@ class GitLabInventoryService:
                 "message": (
                     "기본 .heimdall/project.yaml draft를 생성했습니다. "
                     "이 초안은 아직 deploy-ready가 아니며 "
-                    "runtime, deploy.compose_file, deploy.app_port, "
-                    "deploy.healthcheck_path를 repo에서 채워야 합니다."
+                    "runtime, deploy.compose_file, "
+                    "deploy.healthcheck 계약을 repo에서 채워야 합니다."
                 ),
             }
         except GitLabProjectCreateError as exc:
@@ -779,14 +1389,66 @@ class GitLabInventoryService:
         return (
             "# Heimdall bootstrap draft\n"
             "# This draft is intentionally incomplete.\n"
-            "# Fill runtime, deploy.compose_file, deploy.app_port, and deploy.healthcheck_path\n"
+            "# Fill runtime, deploy.compose_file, and deploy.healthcheck\n"
             "# before relying on this manifest for app deployment.\n"
             "# Example placeholders:\n"
             "# deploy:\n"
             "#   compose_file: deploy/docker-compose.yml\n"
-            "#   app_port: 3000\n"
-            "#   healthcheck_path: /health\n\n"
+            "#   healthcheck:\n"
+            "#     type: http\n"
+            "#     path: /health\n\n"
             f"{content}"
+        )
+
+    def _build_project_manifest_draft_for_project(
+        self,
+        *,
+        project: GitLabProject,
+        project_settings: GitLabProjectSettings | None,
+    ) -> str:
+        payload: dict[str, Any] = {
+            "path": str(project.path_with_namespace or "").split("/")[-1] or project.name or "app",
+            "name": project.name or str(project.path_with_namespace or "").split("/")[-1] or "app",
+        }
+        generated = self._build_project_manifest_draft(payload)
+        requested_app_port = self._resolve_requested_app_port(project_settings)
+        database_required = bool(
+            project_settings.database_required if project_settings is not None else False
+        )
+        if requested_app_port is None and not database_required:
+            return generated
+
+        try:
+            _, body = generated.split("\n\n", 1)
+            parsed = yaml.safe_load(body)
+        except (ValueError, yaml.YAMLError):
+            return generated
+        if not isinstance(parsed, dict):
+            return generated
+
+        deploy = parsed.get("deploy")
+        if isinstance(deploy, dict) and requested_app_port is not None:
+            deploy["app_port"] = requested_app_port
+
+        database = parsed.get("database")
+        if isinstance(database, dict):
+            database["required"] = database_required
+            if database_required:
+                database["engine"] = "postgres"
+
+        dumped = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
+        return (
+            "# Heimdall bootstrap draft\n"
+            "# This draft is intentionally incomplete.\n"
+            "# Fill runtime, deploy.compose_file, and deploy.healthcheck\n"
+            "# before relying on this manifest for app deployment.\n"
+            "# Example placeholders:\n"
+            "# deploy:\n"
+            "#   compose_file: deploy/docker-compose.yml\n"
+            "#   healthcheck:\n"
+            "#     type: http\n"
+            "#     path: /health\n\n"
+            f"{dumped}"
         )
 
     def _create_gitlab_session(self, settings: GitLabSettings) -> requests.Session:
@@ -894,15 +1556,77 @@ class GitLabInventoryService:
             ).scalars()
         }
 
-    def _normalize_project_settings_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        staging_enabled = bool(payload.get("staging_enabled", False))
-        ready_for_bootstrap = bool(payload.get("ready_for_bootstrap", False))
+    def _resolve_staging_environment_key(
+        self,
+        project_settings: GitLabProjectSettings | None,
+    ) -> str:
+        key = str(
+            project_settings.staging_environment_key if project_settings is not None else STAGING_ENV_DEDICATED_VM
+        ).strip() or STAGING_ENV_DEDICATED_VM
+        if key not in ALLOWED_STAGING_ENVIRONMENT_KEYS:
+            return STAGING_ENV_DEDICATED_VM
+        return key
+
+    def _build_staging_environment_options(self) -> list[dict[str, Any]]:
+        return [dict(option) for option in get_staging_environment_catalog()]
+
+    def _build_deployment_environment_options(self) -> list[dict[str, Any]]:
+        return [dict(option) for option in get_deployment_environment_catalog()]
+
+    def _resolve_deployment_environment(
+        self,
+        project_settings: GitLabProjectSettings | None,
+    ) -> str:
+        if project_settings is None:
+            return DEPLOYMENT_ENV_STAGING
+        return normalize_deployment_environment(project_settings.deployment_environment)
+
+    def _resolve_deployment_pool_key(
+        self,
+        project_settings: GitLabProjectSettings | None,
+    ) -> str | None:
+        if project_settings is None:
+            return None
+        return self._normalize_optional_string(project_settings.deployment_pool_key)
+
+    def _resolve_requested_app_port(
+        self,
+        project_settings: GitLabProjectSettings | None,
+    ) -> int | None:
+        if project_settings is None:
+            return None
+        value = project_settings.requested_app_port
+        if isinstance(value, bool) or value is None:
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    def _normalize_project_settings_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        preview_only: bool = False,
+    ) -> dict[str, Any]:
+        deployment_environment = normalize_deployment_environment(payload.get("deployment_environment"))
+        deployment_pool_key = self._normalize_optional_string(payload.get("deployment_pool_key"))
+        requested_app_port = self._normalize_optional_positive_int(
+            payload.get("requested_app_port"),
+            "requested_app_port",
+        )
+        staging_environment_key = (
+            STAGING_ENV_SHARED_HOST
+            if deployment_environment == DEPLOYMENT_ENV_STAGING
+            else STAGING_ENV_DEDICATED_VM
+        )
         database_required = bool(payload.get("database_required", False))
         database_engine = str(payload.get("database_engine") or "").strip().lower() or None
         database_mode = str(payload.get("database_mode") or "").strip().lower() or None
         migration_command = str(payload.get("migration_command") or "").strip() or None
-        deploy_branch = str(payload.get("deploy_branch") or "").strip()
-        bootstrap_strategy = str(payload.get("bootstrap_strategy") or "").strip().lower()
+        deploy_branch = str(payload.get("deploy_branch") or "").strip() or "main"
+        bootstrap_strategy = str(payload.get("bootstrap_strategy") or "merge_request").strip().lower()
         staging_server_name = self._normalize_optional_string(payload.get("staging_server_name"))
         staging_server_id = self._normalize_optional_string(payload.get("staging_server_id"))
         staging_template_id = self._normalize_optional_string(payload.get("staging_template_id"))
@@ -926,16 +1650,18 @@ class GitLabInventoryService:
         staging_ansible_roles = self._normalize_string_list(payload.get("staging_ansible_roles"))
         notes = str(payload.get("notes") or "").strip() or None
 
-        if ready_for_bootstrap and not staging_enabled:
-            raise GitLabProjectSettingsError(
-                "ready_for_bootstrap requires staging_enabled to be true."
-            )
-        if not deploy_branch:
+        if deployment_environment not in ALLOWED_DEPLOYMENT_ENVIRONMENTS:
+            raise GitLabProjectSettingsError("deployment_environment must be one of: staging, production.")
+        if not preview_only and not deploy_branch:
             raise GitLabProjectSettingsError("deploy_branch is required.")
-        if bootstrap_strategy not in ALLOWED_BOOTSTRAP_STRATEGIES:
+        if not preview_only and bootstrap_strategy not in ALLOWED_BOOTSTRAP_STRATEGIES:
             raise GitLabProjectSettingsError(
                 "bootstrap_strategy must be one of: merge_request, direct_commit, manual."
             )
+        staging_enabled = deployment_environment == DEPLOYMENT_ENV_STAGING
+        ready_for_bootstrap = bool(
+            staging_enabled and deployment_pool_key and requested_app_port is not None
+        )
 
         if not database_required:
             database_engine = None
@@ -957,6 +1683,10 @@ class GitLabInventoryService:
             self._validate_static_network_pair(staging_vm_ip, staging_vm_gateway)
 
         return {
+            "deployment_environment": deployment_environment,
+            "deployment_pool_key": deployment_pool_key,
+            "requested_app_port": requested_app_port,
+            "staging_environment_key": staging_environment_key,
             "staging_enabled": staging_enabled,
             "ready_for_bootstrap": ready_for_bootstrap,
             "database_required": database_required,
@@ -980,16 +1710,181 @@ class GitLabInventoryService:
             "notes": notes,
         }
 
+    def _build_environment_contract_preview(
+        self,
+        *,
+        project: GitLabProject,
+        project_settings: GitLabProjectSettings | None,
+        manifest_status: str,
+        manifest_deploy_summary: dict[str, Any] | None,
+        deployment_environment: str,
+        deployment_pool_key: str | None,
+        requested_app_port: int | None,
+        database_required: bool,
+        live_preview: bool,
+    ) -> dict[str, Any]:
+        normalized_environment = normalize_deployment_environment(deployment_environment)
+        pool_options = self._staging_registry_service.list_pools(normalized_environment)
+        resolved_pool_key = deployment_pool_key
+        if resolved_pool_key is None and len(pool_options) == 1:
+            resolved_pool_key = str(pool_options[0].get("pool_key") or "").strip() or None
+
+        manifest_app_port = None
+        if isinstance(manifest_deploy_summary, dict):
+            manifest_port_candidate = manifest_deploy_summary.get("app_port")
+            if isinstance(manifest_port_candidate, int) and not isinstance(manifest_port_candidate, bool):
+                manifest_app_port = int(manifest_port_candidate)
+
+        effective_app_port = requested_app_port if requested_app_port is not None else manifest_app_port
+        app_port_source = (
+            "settings"
+            if requested_app_port is not None
+            else "manifest" if manifest_app_port is not None else None
+        )
+
+        pool_summary: dict[str, Any] | None = None
+        available_port_options: list[dict[str, Any]] = []
+        requested_port_available = False
+        suggested_app_port = None
+        port_range_summary = get_environment_port_range(normalized_environment)
+
+        if resolved_pool_key:
+            if live_preview:
+                pool_summary = self._staging_registry_service.preview_pool(
+                    environment=normalized_environment,
+                    pool_key=resolved_pool_key,
+                    requested_port=effective_app_port,
+                )
+                available_port_options = list(pool_summary.get("available_port_options") or [])
+                requested_port_available = bool(pool_summary.get("requested_port_available"))
+                suggested_app_port = pool_summary.get("suggested_app_port")
+                port_range_summary = dict(pool_summary.get("port_range") or port_range_summary)
+            else:
+                pool_summary = self._find_pool_summary(pool_options, resolved_pool_key)
+                suggested_app_port = effective_app_port
+
+        readiness_summary = self._build_readiness_summary(
+            project=project,
+            manifest_status=manifest_status,
+            deployment_environment=normalized_environment,
+            deployment_pool_key=resolved_pool_key,
+            pool_summary=pool_summary,
+            effective_app_port=effective_app_port,
+            database_required=database_required,
+            live_preview=live_preview,
+            requested_port_available=requested_port_available,
+        )
+
+        return {
+            "deployment_environment": normalized_environment,
+            "deployment_pool_key": resolved_pool_key,
+            "deployment_pool_options": pool_options,
+            "deployment_pool_summary": pool_summary,
+            "port_range_summary": port_range_summary,
+            "available_port_options": available_port_options,
+            "requested_app_port": requested_app_port,
+            "effective_app_port": effective_app_port,
+            "app_port_source": app_port_source,
+            "suggested_app_port": suggested_app_port,
+            "requested_port_available": requested_port_available,
+            "readiness_summary": readiness_summary,
+        }
+
+    def _find_pool_summary(
+        self,
+        pool_options: list[dict[str, Any]],
+        pool_key: str,
+    ) -> dict[str, Any] | None:
+        normalized_pool_key = str(pool_key or "").strip()
+        for option in pool_options:
+            if str(option.get("pool_key") or "").strip() == normalized_pool_key:
+                return dict(option)
+        return None
+
+    def _build_readiness_summary(
+        self,
+        *,
+        project: GitLabProject,
+        manifest_status: str,
+        deployment_environment: str,
+        deployment_pool_key: str | None,
+        pool_summary: dict[str, Any] | None,
+        effective_app_port: int | None,
+        database_required: bool,
+        live_preview: bool,
+        requested_port_available: bool,
+    ) -> dict[str, Any]:
+        blocking_reasons: list[str] = []
+
+        if project.archived:
+            blocking_reasons.append("Archived 프로젝트는 Deploy Staging을 지원하지 않습니다.")
+        if deployment_environment != DEPLOYMENT_ENV_STAGING:
+            blocking_reasons.append(
+                "Production environment는 저장할 수 있지만 현재 Deploy Staging 실행 대상은 아닙니다."
+            )
+        if not deployment_pool_key:
+            blocking_reasons.append("먼저 배포할 host pool을 선택해야 합니다.")
+        elif pool_summary is None:
+            blocking_reasons.append("선택한 환경에서 사용할 수 있는 host pool을 찾지 못했습니다.")
+        else:
+            pool_state = str(pool_summary.get("state") or "").strip().lower()
+            if pool_state == "empty":
+                blocking_reasons.append("선택한 환경에는 등록된 host pool이 없습니다.")
+            elif pool_state == "full":
+                blocking_reasons.append(
+                    str(pool_summary.get("summary") or "선택한 pool이 현재 새 앱을 받을 수 없습니다.").strip()
+                )
+
+        if effective_app_port is None:
+            blocking_reasons.append(
+                "App port를 선택하거나 `.heimdall/project.yaml`의 deploy.app_port를 채워야 합니다."
+            )
+        elif live_preview and deployment_pool_key and not requested_port_available:
+            blocking_reasons.append("선택한 app port가 현재 pool에서 비어 있지 않습니다.")
+
+        if manifest_status != "valid":
+            blocking_reasons.append(
+                f"유효한 {MANIFEST_FILE_PATH} 이 필요합니다. compose/healthcheck 계약을 먼저 맞춰야 합니다."
+            )
+        if database_required:
+            blocking_reasons.append("database_required=true 프로젝트는 아직 Deploy Staging을 지원하지 않습니다.")
+
+        ready = len(blocking_reasons) == 0
+        return {
+            "ready": ready,
+            "state": "ready" if ready else "blocked",
+            "can_request_staging_deploy": ready,
+            "blocking_reasons": blocking_reasons,
+            "summary": "Ready for Deploy Staging." if ready else blocking_reasons[0],
+        }
+
     def _serialize_project(
         self,
         project: GitLabProject,
         project_settings: GitLabProjectSettings | None,
         manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
-        manifest = self._load_project_manifest_status(
+        manifest = self._load_project_manifest(
             project=project,
             manifest_context=manifest_context,
             ref=self._resolve_manifest_ref(project, project_settings),
+        )
+        staging_environment_key = self._resolve_staging_environment_key(project_settings)
+        staging_target = self._build_staging_target_context(
+            staging_environment_key,
+            project_settings=project_settings,
+        )
+        manifest_deploy_summary = self._serialize_manifest_deploy_summary(manifest["manifest_payload"])
+        contract_preview = self._build_environment_contract_preview(
+            project=project,
+            project_settings=project_settings,
+            manifest_status=manifest["manifest_status"],
+            manifest_deploy_summary=manifest_deploy_summary,
+            deployment_environment=self._resolve_deployment_environment(project_settings),
+            deployment_pool_key=self._resolve_deployment_pool_key(project_settings),
+            requested_app_port=self._resolve_requested_app_port(project_settings),
+            database_required=project_settings.database_required if project_settings is not None else False,
+            live_preview=False,
         )
         return {
             "gitlab_project_id": project.gitlab_project_id,
@@ -1003,9 +1898,25 @@ class GitLabInventoryService:
             "archived": project.archived,
             "last_activity_at": project.last_activity_at,
             "synced_at": project.synced_at,
-            "configuration_status": self._derive_configuration_status(project_settings),
+            "configuration_status": self._derive_configuration_status(
+                project_settings,
+                contract_preview["readiness_summary"],
+            ),
             "manifest_status": manifest["manifest_status"],
             "manifest_summary": manifest["manifest_summary"],
+            "deployment_environment": contract_preview["deployment_environment"],
+            "deployment_environment_options": self._build_deployment_environment_options(),
+            "deployment_pool_key": contract_preview["deployment_pool_key"],
+            "deployment_pool_summary": contract_preview["deployment_pool_summary"],
+            "requested_app_port": contract_preview["requested_app_port"],
+            "effective_app_port": contract_preview["effective_app_port"],
+            "app_port_source": contract_preview["app_port_source"],
+            "readiness_summary": contract_preview["readiness_summary"],
+            "staging_environment_key": staging_environment_key,
+            "staging_environment_options": self._build_staging_environment_options(),
+            "staging_target_mode": staging_target["mode"],
+            "staging_target_summary": staging_target["summary"],
+            "manifest_deploy_summary": manifest_deploy_summary,
             "settings_summary": self._serialize_project_settings_summary(project_settings),
         }
 
@@ -1017,6 +1928,10 @@ class GitLabInventoryService:
             return None
 
         return {
+            "deployment_environment": self._resolve_deployment_environment(project_settings),
+            "deployment_pool_key": self._resolve_deployment_pool_key(project_settings),
+            "requested_app_port": self._resolve_requested_app_port(project_settings),
+            "staging_environment_key": self._resolve_staging_environment_key(project_settings),
             "staging_enabled": project_settings.staging_enabled,
             "ready_for_bootstrap": project_settings.ready_for_bootstrap,
             "database_required": project_settings.database_required,
@@ -1040,6 +1955,134 @@ class GitLabInventoryService:
             "updated_at": project_settings.updated_at,
         }
 
+    def _serialize_manifest_deploy_summary(self, manifest_payload: Any) -> dict[str, Any] | None:
+        if not isinstance(manifest_payload, dict):
+            return None
+
+        deploy = manifest_payload.get("deploy")
+        if not isinstance(deploy, dict):
+            return None
+
+        compose_file = self._normalize_compose_file_path(deploy.get("compose_file"))
+        app_port = deploy.get("app_port")
+        healthcheck = self._extract_healthcheck_config(deploy)
+
+        summary = {
+            "compose_file": compose_file,
+            "app_port": app_port if isinstance(app_port, int) and not isinstance(app_port, bool) else None,
+            "healthcheck": healthcheck,
+            "healthcheck_path": healthcheck.get("path") if isinstance(healthcheck, dict) else None,
+            "healthcheck_summary": self._summarize_healthcheck_config(healthcheck),
+        }
+        if not any(value not in (None, "") for value in summary.values()):
+            return None
+        return summary
+
+    def _normalize_healthcheck_type(self, value: Any) -> str | None:
+        text = str(value or "").strip().lower()
+        if not text:
+            return None
+        if text not in ALLOWED_HEALTHCHECK_TYPES:
+            return None
+        return text
+
+    def _normalize_healthcheck_port(self, value: Any) -> int | None:
+        if value in (None, ""):
+            return None
+        try:
+            parsed = int(value)
+        except (TypeError, ValueError):
+            return None
+        if parsed <= 0:
+            return None
+        return parsed
+
+    def _extract_healthcheck_config(self, deploy: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(deploy, dict):
+            return None
+
+        legacy_path = str(deploy.get("healthcheck_path") or "").strip() or None
+        raw_config = deploy.get("healthcheck")
+        if isinstance(raw_config, dict):
+            healthcheck_type = self._normalize_healthcheck_type(raw_config.get("type"))
+            if healthcheck_type is None:
+                return {"type": None}
+
+            config: dict[str, Any] = {"type": healthcheck_type}
+            if healthcheck_type == "http":
+                path = str(raw_config.get("path") or legacy_path or "").strip() or None
+                port = self._normalize_healthcheck_port(raw_config.get("port"))
+                if path is not None:
+                    config["path"] = path
+                if port is not None:
+                    config["port"] = port
+            elif healthcheck_type == "tcp":
+                port = self._normalize_healthcheck_port(raw_config.get("port"))
+                if port is not None:
+                    config["port"] = port
+            elif healthcheck_type == "command":
+                command = str(raw_config.get("command") or "").strip() or None
+                if command is not None:
+                    config["command"] = command
+            return config
+
+        if legacy_path is not None:
+            return {"type": "http", "path": legacy_path}
+        return None
+
+    def _summarize_healthcheck_config(self, config: dict[str, Any] | None) -> str | None:
+        if not isinstance(config, dict):
+            return None
+
+        healthcheck_type = self._normalize_healthcheck_type(config.get("type"))
+        if healthcheck_type == "http":
+            path = str(config.get("path") or "").strip()
+            port = self._normalize_healthcheck_port(config.get("port"))
+            suffix = f" on {port}" if port is not None else ""
+            return f"http {path}{suffix}" if path else "http"
+        if healthcheck_type == "tcp":
+            port = self._normalize_healthcheck_port(config.get("port"))
+            return f"tcp {port}" if port is not None else "tcp on app_port"
+        if healthcheck_type == "command":
+            command = str(config.get("command") or "").strip()
+            return f"command {command}" if command else "command"
+        if healthcheck_type == "none":
+            return "none"
+        return None
+
+    def _build_healthcheck_deploy_values(
+        self,
+        deploy: dict[str, Any],
+        *,
+        default_port: int | None,
+    ) -> dict[str, Any]:
+        config = self._extract_healthcheck_config(deploy)
+        if not isinstance(config, dict):
+            raise GitLabProjectSettingsError("deploy.healthcheck contract is missing.")
+
+        healthcheck_type = self._normalize_healthcheck_type(config.get("type"))
+        if healthcheck_type is None:
+            raise GitLabProjectSettingsError("deploy.healthcheck.type is invalid.")
+
+        values: dict[str, Any] = {
+            "healthcheck_type": healthcheck_type,
+        }
+        if healthcheck_type == "http":
+            path = str(config.get("path") or "").strip()
+            if not path.startswith("/"):
+                raise GitLabProjectSettingsError("deploy.healthcheck.path must start with '/'.")
+            values["healthcheck_path"] = path
+            values["healthcheck_port"] = self._normalize_healthcheck_port(config.get("port")) or default_port
+        elif healthcheck_type == "tcp":
+            values["healthcheck_port"] = self._normalize_healthcheck_port(config.get("port")) or default_port
+        elif healthcheck_type == "command":
+            command = str(config.get("command") or "").strip()
+            if not command:
+                raise GitLabProjectSettingsError("deploy.healthcheck.command must be a non-empty string.")
+            values["healthcheck_command"] = command
+
+        return values
+
     def _serialize_project_settings_detail(
         self,
         project: GitLabProject,
@@ -1048,16 +2091,52 @@ class GitLabInventoryService:
         manifest_context: dict[str, Any],
     ) -> dict[str, Any]:
         summary = self._serialize_project_settings_summary(project_settings)
-        manifest = self._load_project_manifest_status(
+        manifest = self._load_project_manifest(
             project=project,
             manifest_context=manifest_context,
             ref=self._resolve_manifest_ref(project, project_settings),
         )
+        manifest_deploy_summary = self._serialize_manifest_deploy_summary(manifest["manifest_payload"])
+        contract_preview = self._build_environment_contract_preview(
+            project=project,
+            project_settings=project_settings,
+            manifest_status=manifest["manifest_status"],
+            manifest_deploy_summary=manifest_deploy_summary,
+            deployment_environment=self._resolve_deployment_environment(project_settings),
+            deployment_pool_key=self._resolve_deployment_pool_key(project_settings),
+            requested_app_port=self._resolve_requested_app_port(project_settings),
+            database_required=project_settings.database_required if project_settings is not None else False,
+            live_preview=True,
+        )
+        staging_environment_key = self._resolve_staging_environment_key(project_settings)
+        staging_target = self._build_staging_target_context(
+            staging_environment_key,
+            project_settings=project_settings,
+        )
         return {
             "gitlab_project_id": project_id,
-            "configuration_status": self._derive_configuration_status(project_settings),
+            "configuration_status": self._derive_configuration_status(
+                project_settings,
+                contract_preview["readiness_summary"],
+            ),
             "manifest_status": manifest["manifest_status"],
             "manifest_summary": manifest["manifest_summary"],
+            "deployment_environment": contract_preview["deployment_environment"],
+            "deployment_environment_options": self._build_deployment_environment_options(),
+            "deployment_pool_key": contract_preview["deployment_pool_key"],
+            "deployment_pool_options": contract_preview["deployment_pool_options"],
+            "deployment_pool_summary": contract_preview["deployment_pool_summary"],
+            "port_range_summary": contract_preview["port_range_summary"],
+            "available_port_options": contract_preview["available_port_options"],
+            "requested_app_port": contract_preview["requested_app_port"],
+            "effective_app_port": contract_preview["effective_app_port"],
+            "app_port_source": contract_preview["app_port_source"],
+            "readiness_summary": contract_preview["readiness_summary"],
+            "staging_environment_key": staging_environment_key,
+            "staging_environment_options": self._build_staging_environment_options(),
+            "staging_target_mode": staging_target["mode"],
+            "staging_target_summary": staging_target["summary"],
+            "manifest_deploy_summary": manifest_deploy_summary,
             "staging_enabled": project_settings.staging_enabled if project_settings is not None else False,
             "ready_for_bootstrap": project_settings.ready_for_bootstrap if project_settings is not None else False,
             "database_required": project_settings.database_required if project_settings is not None else False,
@@ -1101,10 +2180,11 @@ class GitLabInventoryService:
     def _derive_configuration_status(
         self,
         project_settings: GitLabProjectSettings | None,
+        readiness_summary: dict[str, Any] | None = None,
     ) -> str:
         if project_settings is None:
             return "discovered"
-        if project_settings.ready_for_bootstrap:
+        if bool((readiness_summary or {}).get("ready")):
             return "ready_for_bootstrap"
         return "configured"
 
@@ -1196,7 +2276,7 @@ class GitLabInventoryService:
         manifest_context: dict[str, Any],
         ref: str | None = None,
     ) -> dict[str, str]:
-        manifest = self._load_project_manifest(
+        manifest = self._load_project_manifest_document_snapshot(
             project=project,
             manifest_context=manifest_context,
             ref=ref,
@@ -1212,19 +2292,39 @@ class GitLabInventoryService:
         manifest_context: dict[str, Any],
         ref: str | None = None,
     ) -> dict[str, Any]:
+        manifest = self._load_project_manifest_document_snapshot(
+            project=project,
+            manifest_context=manifest_context,
+            ref=ref,
+        )
+        return {
+            "manifest_status": manifest["manifest_status"],
+            "manifest_summary": manifest["manifest_summary"],
+            "manifest_payload": manifest["manifest_payload"],
+        }
+
+    def _load_project_manifest_document_snapshot(
+        self,
+        project: GitLabProject,
+        manifest_context: dict[str, Any],
+        ref: str | None = None,
+    ) -> dict[str, Any]:
+        resolved_ref = str(ref or project.default_branch or "HEAD").strip() or "HEAD"
         if not manifest_context.get("available"):
             return {
+                "manifest_ref": resolved_ref,
+                "manifest_exists": False,
                 "manifest_status": "unchecked",
                 "manifest_summary": str(
                     manifest_context.get("error") or "GitLab manifest validation is unavailable."
                 ),
+                "raw_content": None,
                 "manifest_payload": None,
             }
 
         settings = manifest_context["settings"]
         session = manifest_context["session"]
         encoded_path = quote(MANIFEST_FILE_PATH, safe="")
-        resolved_ref = str(ref or project.default_branch or "HEAD").strip() or "HEAD"
         url = urljoin(
             f"{settings.base_url}/",
             f"api/v4/projects/{project.gitlab_project_id}/repository/files/{encoded_path}/raw",
@@ -1240,40 +2340,91 @@ class GitLabInventoryService:
             )
             if response.status_code == 404:
                 return {
+                    "manifest_ref": resolved_ref,
+                    "manifest_exists": False,
                     "manifest_status": "missing",
                     "manifest_summary": f"{MANIFEST_FILE_PATH} was not found on ref {resolved_ref}.",
+                    "raw_content": None,
                     "manifest_payload": None,
                 }
             response.raise_for_status()
         except requests.RequestException as exc:
             return {
+                "manifest_ref": resolved_ref,
+                "manifest_exists": False,
                 "manifest_status": "unchecked",
                 "manifest_summary": self._map_gitlab_request_error(exc),
+                "raw_content": None,
                 "manifest_payload": None,
             }
 
+        raw_content = response.text
+
         try:
-            payload = yaml.safe_load(response.text)
+            payload = yaml.safe_load(raw_content)
         except yaml.YAMLError as exc:
             return {
+                "manifest_ref": resolved_ref,
+                "manifest_exists": True,
                 "manifest_status": "invalid",
                 "manifest_summary": f"{MANIFEST_FILE_PATH} YAML parse error: {exc}",
+                "raw_content": raw_content,
                 "manifest_payload": None,
             }
 
         validation_error = self._validate_manifest_payload(payload)
         if validation_error is not None:
             return {
+                "manifest_ref": resolved_ref,
+                "manifest_exists": True,
                 "manifest_status": "invalid",
                 "manifest_summary": validation_error,
+                "raw_content": raw_content,
                 "manifest_payload": payload,
             }
 
         return {
+            "manifest_ref": resolved_ref,
+            "manifest_exists": True,
             "manifest_status": "valid",
             "manifest_summary": f"{MANIFEST_FILE_PATH} passed the minimum staging validation on ref {resolved_ref}.",
+            "raw_content": raw_content,
             "manifest_payload": payload,
         }
+
+    def _write_project_manifest_file(
+        self,
+        *,
+        project: GitLabProject,
+        settings: GitLabSettings,
+        branch: str,
+        content: str,
+        exists: bool,
+        commit_message: str | None,
+    ) -> None:
+        session = self._create_gitlab_session(settings)
+        encoded_path = quote(MANIFEST_FILE_PATH, safe="")
+        url = urljoin(
+            f"{settings.base_url}/",
+            f"api/v4/projects/{project.gitlab_project_id}/repository/files/{encoded_path}",
+        )
+        default_message = (
+            "Update .heimdall/project.yaml via Heimdall"
+            if exists
+            else "Add .heimdall/project.yaml via Heimdall"
+        )
+        self._request_gitlab(
+            session=session,
+            method="PUT" if exists else "POST",
+            url=url,
+            settings=settings,
+            data={
+                "branch": branch,
+                "content": content,
+                "commit_message": commit_message or default_message,
+            },
+            error_cls=GitLabProjectSettingsError,
+        )
 
     def _validate_manifest_payload(self, payload: Any) -> str | None:
         if not isinstance(payload, dict):
@@ -1298,19 +2449,44 @@ class GitLabInventoryService:
                 "Manifest validation failed: deploy.compose_file must be a relative repo path "
                 "without '..'."
             )
-        app_port = deploy.get("app_port")
-        if isinstance(app_port, bool) or not isinstance(app_port, int) or app_port <= 0:
-            return "Manifest validation failed: deploy.app_port must be a positive integer."
-        healthcheck_path = deploy.get("healthcheck_path")
-        if (
-            not isinstance(healthcheck_path, str)
-            or not healthcheck_path.strip()
-            or not healthcheck_path.startswith("/")
-        ):
+        healthcheck = self._extract_healthcheck_config(deploy)
+        if not isinstance(healthcheck, dict):
             return (
-                "Manifest validation failed: deploy.healthcheck_path must be "
-                "a non-empty path starting with /."
+                "Manifest validation failed: deploy.healthcheck must be defined. "
+                "Use deploy.healthcheck.type or legacy deploy.healthcheck_path."
             )
+        healthcheck_type = self._normalize_healthcheck_type(healthcheck.get("type"))
+        if healthcheck_type is None:
+            return (
+                "Manifest validation failed: deploy.healthcheck.type must be one of "
+                "http, tcp, command, or none."
+            )
+        if healthcheck_type == "http":
+            healthcheck_path = str(healthcheck.get("path") or "").strip()
+            if not healthcheck_path.startswith("/"):
+                return (
+                    "Manifest validation failed: deploy.healthcheck.path must be "
+                    "a non-empty path starting with /."
+                )
+            explicit_port = healthcheck.get("port")
+            if explicit_port not in (None, "") and self._normalize_healthcheck_port(explicit_port) is None:
+                return (
+                    "Manifest validation failed: deploy.healthcheck.port must be a positive integer "
+                    "when provided."
+                )
+        elif healthcheck_type == "tcp":
+            explicit_port = healthcheck.get("port")
+            if explicit_port not in (None, "") and self._normalize_healthcheck_port(explicit_port) is None:
+                return (
+                    "Manifest validation failed: deploy.healthcheck.port must be a positive integer "
+                    "when provided."
+                )
+        elif healthcheck_type == "command":
+            if not isinstance(healthcheck.get("command"), str) or not str(healthcheck.get("command")).strip():
+                return (
+                    "Manifest validation failed: deploy.healthcheck.command must be "
+                    "a non-empty string."
+                )
 
         environments = payload.get("environments")
         staging = environments.get("staging") if isinstance(environments, dict) else None

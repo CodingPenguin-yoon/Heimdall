@@ -21,6 +21,20 @@ router = APIRouter()
 gitlab_inventory_service = GitLabInventoryService()
 
 
+class GitLabStagingEnvironmentOptionResponse(BaseModel):
+    key: str
+    label: str
+    mode: str
+    configured: bool
+    description: str
+
+
+class GitLabDeploymentEnvironmentOptionResponse(BaseModel):
+    key: str
+    label: str
+    description: str
+
+
 class GitLabProjectResponse(BaseModel):
     gitlab_project_id: int
     name: str
@@ -36,6 +50,19 @@ class GitLabProjectResponse(BaseModel):
     configuration_status: str
     manifest_status: str
     manifest_summary: str
+    deployment_environment: str
+    deployment_environment_options: list[GitLabDeploymentEnvironmentOptionResponse] = Field(default_factory=list)
+    deployment_pool_key: str | None = None
+    deployment_pool_summary: dict[str, Any] | None = None
+    requested_app_port: int | None = None
+    effective_app_port: int | None = None
+    app_port_source: str | None = None
+    readiness_summary: dict[str, Any] | None = None
+    staging_environment_key: str
+    staging_environment_options: list[GitLabStagingEnvironmentOptionResponse] = Field(default_factory=list)
+    staging_target_mode: str
+    staging_target_summary: dict[str, Any] | None = None
+    manifest_deploy_summary: dict[str, Any] | None = None
     settings_summary: dict[str, Any] | None = None
 
 
@@ -78,6 +105,8 @@ class GitLabProjectCreateRequest(BaseModel):
 
 class GitLabProjectCreateResponse(BaseModel):
     project: GitLabProjectResponse
+    manifest_seeded: bool = False
+    manifest_seed_message: str | None = None
 
 
 class GitLabProjectSettingsResponse(BaseModel):
@@ -85,6 +114,22 @@ class GitLabProjectSettingsResponse(BaseModel):
     configuration_status: str
     manifest_status: str
     manifest_summary: str
+    deployment_environment: str
+    deployment_environment_options: list[GitLabDeploymentEnvironmentOptionResponse] = Field(default_factory=list)
+    deployment_pool_key: str | None = None
+    deployment_pool_options: list[dict[str, Any]] = Field(default_factory=list)
+    deployment_pool_summary: dict[str, Any] | None = None
+    port_range_summary: dict[str, Any] | None = None
+    available_port_options: list[dict[str, Any]] = Field(default_factory=list)
+    requested_app_port: int | None = None
+    effective_app_port: int | None = None
+    app_port_source: str | None = None
+    readiness_summary: dict[str, Any] | None = None
+    staging_environment_key: str
+    staging_environment_options: list[GitLabStagingEnvironmentOptionResponse] = Field(default_factory=list)
+    staging_target_mode: str
+    staging_target_summary: dict[str, Any] | None = None
+    manifest_deploy_summary: dict[str, Any] | None = None
     staging_enabled: bool
     ready_for_bootstrap: bool
     database_required: bool
@@ -93,12 +138,28 @@ class GitLabProjectSettingsResponse(BaseModel):
     migration_command: str | None = None
     deploy_branch: str
     bootstrap_strategy: str
+    staging_server_name: str | None = None
+    staging_server_id: str | None = None
+    staging_template_id: str | None = None
+    staging_storage_id: str | None = None
+    staging_network_ids: list[str] = Field(default_factory=list)
+    staging_cpu_cores: int | None = None
+    staging_memory_gb: int | None = None
+    staging_disk_size_gb: int | None = None
+    staging_vm_ip: str | None = None
+    staging_vm_gateway: str | None = None
+    staging_ansible_packages: list[str] = Field(default_factory=list)
+    staging_ansible_roles: list[str] = Field(default_factory=list)
     notes: str | None = None
     updated_at: str | None = None
     settings_summary: dict[str, Any] | None = None
 
 
 class GitLabProjectSettingsUpdateRequest(BaseModel):
+    deployment_environment: str = "staging"
+    deployment_pool_key: str | None = None
+    requested_app_port: int | None = Field(default=None, ge=1)
+    staging_environment_key: str = "dedicated_vm"
     staging_enabled: bool = False
     ready_for_bootstrap: bool = False
     database_required: bool = False
@@ -107,7 +168,78 @@ class GitLabProjectSettingsUpdateRequest(BaseModel):
     migration_command: str | None = None
     deploy_branch: str = "main"
     bootstrap_strategy: str = "merge_request"
+    staging_server_name: str | None = None
+    staging_server_id: str | None = None
+    staging_template_id: str | None = None
+    staging_storage_id: str | None = None
+    staging_network_ids: list[str] | None = None
+    staging_cpu_cores: int | None = Field(default=None, ge=1)
+    staging_memory_gb: int | None = Field(default=None, ge=1)
+    staging_disk_size_gb: int | None = Field(default=None, ge=1)
+    staging_vm_ip: str | None = None
+    staging_vm_gateway: str | None = None
+    staging_ansible_packages: list[str] | None = None
+    staging_ansible_roles: list[str] | None = None
     notes: str | None = None
+
+
+class GitLabProjectSettingsPreviewRequest(BaseModel):
+    deployment_environment: str = "staging"
+    deployment_pool_key: str | None = None
+    requested_app_port: int | None = Field(default=None, ge=1)
+
+
+class GitLabProjectSettingsPreviewResponse(BaseModel):
+    deployment_environment: str
+    deployment_environment_options: list[GitLabDeploymentEnvironmentOptionResponse] = Field(default_factory=list)
+    deployment_pool_key: str | None = None
+    deployment_pool_options: list[dict[str, Any]] = Field(default_factory=list)
+    deployment_pool_summary: dict[str, Any] | None = None
+    port_range_summary: dict[str, Any] | None = None
+    available_port_options: list[dict[str, Any]] = Field(default_factory=list)
+    requested_app_port: int | None = None
+    suggested_app_port: int | None = None
+    requested_port_available: bool = False
+    readiness_summary: dict[str, Any] | None = None
+
+
+class GitLabProjectManifestResponse(BaseModel):
+    gitlab_project_id: int
+    path_with_namespace: str
+    default_branch: str | None = None
+    deploy_branch: str | None = None
+    manifest_ref: str
+    manifest_exists: bool
+    manifest_status: str
+    manifest_summary: str
+    raw_content: str | None = None
+    draft_content: str
+    manifest_deploy_summary: dict[str, Any] | None = None
+    requested_app_port: int | None = None
+    effective_app_port: int | None = None
+    app_port_source: str | None = None
+    database_required: bool = False
+    write_mode: str | None = None
+    message: str | None = None
+
+
+class GitLabProjectManifestUpdateRequest(BaseModel):
+    branch: str = Field(min_length=1)
+    content: str = Field(min_length=1)
+    commit_message: str | None = None
+
+
+class GitLabProjectManifestPreviewRequest(BaseModel):
+    content: str = Field(min_length=1)
+
+
+class GitLabProjectManifestPreviewResponse(BaseModel):
+    manifest_status: str
+    manifest_summary: str
+    manifest_deploy_summary: dict[str, Any] | None = None
+    requested_app_port: int | None = None
+    effective_app_port: int | None = None
+    app_port_source: str | None = None
 
 
 class GitLabDeployRequestResponse(BaseModel):
@@ -162,6 +294,81 @@ async def update_gitlab_project_settings(
     try:
         return GitLabProjectSettingsResponse(
             **gitlab_inventory_service.upsert_project_settings(project_id, payload.model_dump())
+        )
+    except GitLabProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GitLabProjectSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/gitlab/projects/{project_id}/settings/preview",
+    response_model=GitLabProjectSettingsPreviewResponse,
+)
+async def preview_gitlab_project_settings(
+    project_id: int,
+    payload: GitLabProjectSettingsPreviewRequest,
+) -> GitLabProjectSettingsPreviewResponse:
+    try:
+        return GitLabProjectSettingsPreviewResponse(
+            **gitlab_inventory_service.preview_project_settings_contract(
+                project_id,
+                payload.model_dump(),
+            )
+        )
+    except GitLabProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GitLabProjectSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/gitlab/projects/{project_id}/manifest", response_model=GitLabProjectManifestResponse)
+async def get_gitlab_project_manifest(
+    project_id: int,
+    ref: str | None = None,
+) -> GitLabProjectManifestResponse:
+    try:
+        return GitLabProjectManifestResponse(
+            **gitlab_inventory_service.get_project_manifest_document(project_id, ref=ref)
+        )
+    except GitLabProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GitLabProjectSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.put("/gitlab/projects/{project_id}/manifest", response_model=GitLabProjectManifestResponse)
+async def update_gitlab_project_manifest(
+    project_id: int,
+    payload: GitLabProjectManifestUpdateRequest,
+) -> GitLabProjectManifestResponse:
+    try:
+        return GitLabProjectManifestResponse(
+            **gitlab_inventory_service.upsert_project_manifest(
+                project_id,
+                payload.model_dump(),
+            )
+        )
+    except GitLabProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GitLabProjectSettingsError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.post(
+    "/gitlab/projects/{project_id}/manifest/preview",
+    response_model=GitLabProjectManifestPreviewResponse,
+)
+async def preview_gitlab_project_manifest(
+    project_id: int,
+    payload: GitLabProjectManifestPreviewRequest,
+) -> GitLabProjectManifestPreviewResponse:
+    try:
+        return GitLabProjectManifestPreviewResponse(
+            **gitlab_inventory_service.preview_project_manifest_document(
+                project_id,
+                payload.model_dump(),
+            )
         )
     except GitLabProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc

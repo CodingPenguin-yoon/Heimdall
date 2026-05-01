@@ -42,6 +42,7 @@ class DeployRequest(BaseModel):
     # 옵션 플래그
     skip_terraform: Optional[bool] = False
     skip_ansible: Optional[bool] = False
+    create_as_staging_host: Optional[bool] = False
 
 
 class DeployResponse(BaseModel):

@@ -18,6 +18,7 @@ import {
   X,
 } from 'lucide-react'
 import {
+  getStagingHosts,
   getInstances,
   getServers,
   performInstanceAction,
@@ -44,6 +45,8 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
   const [pendingInstanceActions, setPendingInstanceActions] = useState({})
   const [editingInstanceKey, setEditingInstanceKey] = useState(null)
   const [editForm, setEditForm] = useState({ cpuCores: '', memoryGb: '' })
+  const [stagingHostsByKey, setStagingHostsByKey] = useState({})
+  const [openIpPopoverKey, setOpenIpPopoverKey] = useState(null)
   const [loading, setLoading] = useState(true)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -71,17 +74,28 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
     try {
       setRefreshing(true)
 
-      const [instancesResponse, serversResponse] = await Promise.all([
+      const [instancesResponse, serversResponse, stagingHostsResponse] = await Promise.allSettled([
         getInstances(),
         getServers(),
+        getStagingHosts(),
       ])
 
+      if (instancesResponse.status !== 'fulfilled' || serversResponse.status !== 'fulfilled') {
+        throw (instancesResponse.status === 'rejected' ? instancesResponse.reason : serversResponse.reason)
+      }
+
+      const instancesPayload = instancesResponse.value?.data
+      const serversPayload = serversResponse.value?.data
       const instancesList =
-        instancesResponse.data?.vms ||
-        instancesResponse.data?.instances ||
-        instancesResponse.data ||
+        instancesPayload?.vms ||
+        instancesPayload?.instances ||
+        instancesPayload ||
         []
-      const serversList = serversResponse.data?.servers || serversResponse.data || []
+      const serversList = serversPayload?.servers || serversPayload || []
+      const stagingHosts =
+        stagingHostsResponse.status === 'fulfilled'
+          ? stagingHostsResponse.value.data?.hosts || []
+          : []
 
       const sortedServers = [...serversList].sort((a, b) => {
         const nameA = a.name || a.server_name || a.server_id || a.id || ''
@@ -122,7 +136,16 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
         })
       })
 
+      const nextStagingHostsByKey = {}
+      stagingHosts.forEach((host) => {
+        if (!host?.node || host?.vmid == null) {
+          return
+        }
+        nextStagingHostsByKey[`${host.node}:${host.vmid}`] = host
+      })
+
       setGroupedInstances(grouped)
+      setStagingHostsByKey(nextStagingHostsByKey)
 
       if (expandedServers.size === 0) {
         setExpandedServers(new Set(Object.keys(grouped)))
@@ -516,6 +539,19 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
                                     instance.server_name ||
                                     `VM ${instance.vmid || ''}`
                                   const instanceKey = getInstanceKey(instance)
+                                  const stagingHost = stagingHostsByKey[instanceKey]
+                                  const instanceIpAddresses = Array.isArray(instance.ip_addresses)
+                                    ? instance.ip_addresses.filter(Boolean)
+                                    : []
+                                  const displayIp =
+                                    instance.primary_ip ||
+                                    instanceIpAddresses[0] ||
+                                    stagingHost?.host_ip ||
+                                    ''
+                                  const extraIpAddresses = displayIp
+                                    ? instanceIpAddresses.filter((ip) => ip !== displayIp)
+                                    : instanceIpAddresses.slice(1)
+                                  const extraIpCount = extraIpAddresses.length
                                   const isPending = Boolean(pendingInstanceActions[instanceKey])
                                   const isEditing = editingInstanceKey === instanceKey
                                   const isStopped =
@@ -531,6 +567,60 @@ function InstanceList({ onLogsUpdate, onStatusChange }) {
                                           >
                                             {instanceName}
                                           </div>
+                                          {stagingHost || displayIp ? (
+                                            <div className="mt-2 space-y-1.5">
+                                              {stagingHost ? (
+                                                <div>
+                                                  <span className="inline-flex items-center rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-700">
+                                                    Staging Host
+                                                  </span>
+                                                </div>
+                                              ) : null}
+                                              {displayIp ? (
+                                                <div className="relative inline-flex items-center gap-1">
+                                                  <span
+                                                    className="inline-flex items-center rounded-md border border-gray-200 bg-gray-50 px-2 py-1 font-mono text-xs text-gray-600"
+                                                    title={displayIp}
+                                                  >
+                                                    {displayIp}
+                                                  </span>
+                                                  {extraIpCount > 0 ? (
+                                                    <>
+                                                      <button
+                                                        type="button"
+                                                        onClick={() =>
+                                                          setOpenIpPopoverKey((current) =>
+                                                            current === instanceKey ? null : instanceKey
+                                                          )
+                                                        }
+                                                        className="inline-flex items-center rounded-md border border-gray-200 bg-white px-1.5 py-1 text-[11px] font-medium text-gray-600 hover:border-gray-300 hover:bg-gray-50"
+                                                        title={extraIpAddresses.join(', ')}
+                                                      >
+                                                        +{extraIpCount}
+                                                      </button>
+                                                      {openIpPopoverKey === instanceKey ? (
+                                                        <div className="absolute left-0 top-full z-20 mt-1 min-w-[180px] rounded-md border border-gray-200 bg-white p-2 shadow-lg">
+                                                          <div className="mb-1 text-[11px] font-medium text-gray-700">
+                                                            Additional IPs
+                                                          </div>
+                                                          <div className="space-y-1">
+                                                            {extraIpAddresses.map((ip) => (
+                                                              <div
+                                                                key={ip}
+                                                                className="font-mono text-xs text-gray-600"
+                                                              >
+                                                                {ip}
+                                                              </div>
+                                                            ))}
+                                                          </div>
+                                                        </div>
+                                                      ) : null}
+                                                    </>
+                                                  ) : null}
+                                                </div>
+                                              ) : null}
+                                            </div>
+                                          ) : null}
                                           {instance.vmid && (
                                             <div className="text-xs text-gray-500 mt-0.5 truncate">
                                               ID: {instance.vmid}

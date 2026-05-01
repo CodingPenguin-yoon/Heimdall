@@ -1,79 +1,103 @@
 # Backend
 
-현재 백엔드는 FastAPI 기반이며, 구조는 `domains/*`, `integrations/*`, `shared/*`, `alembic` 으로 나뉜다.
-Heimdall 관점에서는 Proxmox/Terraform/Ansible 이 VM engine 이고, GitLab inventory/webhook 은 선택형 control-plane 기능이다.
+The backend is a FastAPI control plane for Heimdall staging operations.
 
-## 현재 구조
+## Main domains
 
 - `app/domains/deploy`
-  - 배포 요청과 Terraform/Ansible 오케스트레이션
+  - Terraform apply
+  - post-clone VM adjustment
+  - Ansible bootstrap
+  - optional staging-host auto-registration
+- `app/domains/staging`
+  - staging host registry list and register APIs
+  - pool grouping and live port preview
 - `app/domains/gitlab`
-  - GitLab inventory 조회/sync, 프로젝트 생성, 프로젝트 설정 관리
+  - inventory sync
+  - project creation
+  - environment-contract settings
+  - `.heimdall/project.yaml` validation
+  - manual `Deploy Staging` wrapper
 - `app/domains/proxmox`
-  - Proxmox 조회, monitoring, instance lifecycle, resize
+  - Proxmox inventory and lifecycle operations
 - `app/domains/task`
-  - task 상태/로그/SSE
+  - task persistence, logs, SSE
 - `app/domains/webhooks`
   - GitLab system hook ingress
-- `app/domains/llm`
-  - LLM Assistant
-- `app/integrations/terraform`
-  - Terraform CLI 연동
-- `app/integrations/ansible`
-  - Ansible CLI 연동
-- `app/shared`
-  - task 저장소, platform DB, IP pool 유틸
-- `alembic`
-  - platform state DB migration
 
-## 현재 활성 기능
+## Current backend behavior
 
-- `POST /api/deploy`
-- task 상태/로그/목록/SSE
-- Proxmox server/template/vm/storage/network 조회
-- monitoring
-- IP pool 조회
-- GitLab inventory 조회 / 수동 sync
-- GitLab namespace 조회 / 프로젝트 생성
-- GitLab 프로젝트별 설정 조회 / 저장
-- GitLab 프로젝트별 수동 staging infra provisioning 시작 / wrapper task 추적
-- GitLab 프로젝트별 `.heimdall/project.yaml` 최소 검증 상태 조회
-- GitLab system hook 수신 후 inventory sync
-- instance `terminate`
-- instance `action` (`start`, `shutdown`, `stop`, `reboot`)
-- instance resource update (`cpu`, `memory`)
-- LLM Assistant
+### Create Instance path
 
-현재 GitLab 관련 기능은 실제 사용 가능하지만 선택 사항이다.
-bootstrap 실행은 아직 이 백엔드에서 제공하지 않고, `Deploy Staging` 의 현재 슬라이스는 valid `.heimdall/project.yaml` 과 저장된 staging infra profile을 통과한 프로젝트만 수동으로 시작할 수 있다.
-이 경로는 수동 staging app deploy 슬라이스이며, 실제 VM/Terraform/Ansible 배포 뒤 GitLab archive 기반 `docker compose` 앱 배포와 HTTP healthcheck 확인까지 수행한다. DB 자동화는 아직 제외한다.
+`POST /api/deploy` can provision a VM from the current wizard inputs.
 
-## 상태 저장
+If `create_as_staging_host=true`:
 
-- task persistence: `data/platform_state.db`
-- legacy import source: `data/task_history.json`
-- migration: `cd backend && alembic upgrade head`
+- task metadata records the preset
+- the backend requires VM IP resolution
+- the backend requires Ansible bootstrap to run successfully
+- only then is the VM registered into `staging_hosts`
+- the current registration default is `environment=staging`, `pool_key=default`
 
-## 실행
+Main files:
 
-루트에서:
+- `app/domains/deploy/router.py`
+- `app/domains/deploy/service.py`
+- `app/domains/staging/router.py`
+- `app/domains/staging/service.py`
+
+### GitLab deploy path
+
+`POST /api/gitlab/projects/{project_id}/deploy/staging` now resolves a staging target from the saved environment contract.
+
+Current contract fields:
+
+- `deployment_environment`
+- `deployment_pool_key`
+- `requested_app_port`
+- `database_required`
+
+Current execution behavior:
+
+- staging deploy rebuilds a live pool preview
+- it selects a ready host from the chosen pool
+- it skips Terraform for the app deploy path
+- it deploys with the GitLab source archive + remote Docker Compose
+
+Current limitation:
+
+- production contracts can be stored, but production execution does not exist yet
+
+## State and migration
+
+- platform DB: `data/platform_state.db`
+- task history import source: `data/task_history.json`
+- migrations:
+
+```bash
+cd backend
+. venv/bin/activate
+alembic upgrade head
+```
+
+Current migration head:
+
+- `20260426_0010`
+
+## Run
+
+From repo root:
 
 ```bash
 pnpm backend
 ```
 
-백엔드 디렉터리에서 직접:
+Directly:
 
 ```bash
+cd backend
 . venv/bin/activate
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-루트 `.env` 를 자동으로 로드한다.
-
-## GitLab / Webhook 메모
-
-- GitLab API 기능에는 `GITLAB_BASE_URL`, `GITLAB_API_TOKEN` 이 필요하다
-- System Hook 검증에는 `GITLAB_SYSTEM_HOOK_SECRET` 이 필요하다
-- 외부 GitLab 이 접근할 수 있는 webhook 주소를 쓰려면 `PLATFORM_PUBLIC_BASE_URL` 을 함께 맞춘다
-- TLS 비활성화 계열 설정은 테스트 환경에서만 임시로 사용하는 편이 안전하다
+The app loads the repo root `.env`.

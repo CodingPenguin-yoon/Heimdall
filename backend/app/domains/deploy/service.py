@@ -15,6 +15,7 @@ import requests
 
 from app.shared.tasks import task_manager, TaskStatus
 from app.shared.gitlab_settings import get_gitlab_settings
+from app.domains.staging.service import StagingHostRegistryError, StagingHostRegistryService
 from app.integrations.terraform import TerraformService
 from app.integrations.ansible import AnsibleService
 from app.domains.proxmox.service import ProxmoxService
@@ -33,6 +34,7 @@ class DeploymentService:
         self.terraform_service = TerraformService()
         self.ansible_service = AnsibleService()
         self.proxmox_service = ProxmoxService()
+        self.staging_host_registry_service = StagingHostRegistryService()
 
     def start_deployment(
         self,
@@ -114,10 +116,17 @@ class DeploymentService:
             "gitlab_project_id": deploy_request.get("gitlab_project_id"),
             "deploy_branch": deploy_request.get("deploy_branch"),
             "path_with_namespace": deploy_request.get("path_with_namespace"),
+            "staging_target_mode": deploy_request.get("staging_target_mode"),
+            "target_host_ip": deploy_request.get("target_host_ip"),
+            "target_host_name": deploy_request.get("target_host_name"),
             "app_deploy_enabled": bool(deploy_request.get("app_deploy_enabled")),
             "compose_file": deploy_request.get("compose_file"),
             "app_port": deploy_request.get("app_port"),
+            "healthcheck_type": deploy_request.get("healthcheck_type"),
             "healthcheck_path": deploy_request.get("healthcheck_path"),
+            "healthcheck_port": deploy_request.get("healthcheck_port"),
+            "healthcheck_command": deploy_request.get("healthcheck_command"),
+            "create_as_staging_host": bool(deploy_request.get("create_as_staging_host")),
             "skip_terraform": skip_terraform,
             "skip_ansible": skip_ansible,
         }
@@ -160,6 +169,13 @@ class DeploymentService:
         """
         vm_ip = None  # Terraform에서 추출한 IP 주소
         app_source_archive_path: Optional[str] = None
+        ansible_executed = False
+        ansible_skipped_due_to_missing_ip = False
+        target_host_ip = str((deploy_request or {}).get("target_host_ip") or "").strip()
+        target_host_name = str((deploy_request or {}).get("target_host_name") or "shared-staging-host").strip()
+        target_host_user = str(
+            (deploy_request or {}).get("target_host_user") or os.getenv("ANSIBLE_SSH_USER", "root")
+        ).strip() or "root"
         workspace_key = (
             (deploy_request or {}).get("server_name")
             or f"task-{task_id[:8]}"
@@ -396,16 +412,31 @@ class DeploymentService:
                 )
             else:
                 task_manager.append_log(task_id, "Terraform 단계 건너뛰기")
+                if target_host_ip:
+                    vm_ip = target_host_ip
+                    task_manager.append_log(
+                        task_id,
+                        f"Shared staging host 사용: {target_host_name} ({target_host_ip})",
+                    )
+                    task_manager.update_metadata(
+                        task_id,
+                        {
+                            "vm_ip": target_host_ip,
+                            "target_host_ip": target_host_ip,
+                            "target_host_name": target_host_name,
+                        },
+                    )
 
             # 5단계: Ansible Playbook 실행
             # IP가 없으면 Ansible 건너뛰기
-            if not skip_ansible and not skip_terraform and not vm_ip:
+            if not skip_ansible and not vm_ip:
                 task_manager.append_log(
                     task_id,
                     "\n[5/5] Ansible 건너뛰기: VM IP 주소를 가져올 수 없습니다. "
                     "(VM에 qemu-guest-agent가 설치되어 있는지 확인하세요)"
                 )
                 skip_ansible = True
+                ansible_skipped_due_to_missing_ip = True
 
             if not skip_ansible:
                 task_manager.append_log(task_id, "\n[5/5] Ansible Playbook 실행 중...")
@@ -418,13 +449,13 @@ class DeploymentService:
 
                 # Inventory 호스트 정보 준비 (Terraform에서 추출한 IP 사용)
                 inventory_hosts = None
-                if not skip_terraform and vm_ip:
+                if vm_ip:
                     self._wait_for_ansible_ssh_readiness(task_id, str(vm_ip))
                     inventory_hosts = [
                         {
-                            "name": "proxmox_vm",
+                            "name": target_host_name if skip_terraform and target_host_ip else "proxmox_vm",
                             "ip": str(vm_ip),
-                            "user": os.getenv("ANSIBLE_SSH_USER", "root"),
+                            "user": target_host_user if skip_terraform and target_host_ip else os.getenv("ANSIBLE_SSH_USER", "root"),
                         }
                     ]
                     task_manager.append_log(task_id, f"Ansible Inventory에 IP {vm_ip} 추가")
@@ -474,6 +505,7 @@ class DeploymentService:
                     return
 
                 task_manager.append_log(task_id, "Ansible Playbook 실행 완료")
+                ansible_executed = True
                 if deploy_request and deploy_request.get("app_deploy_enabled"):
                     task_manager.update_metadata(
                         task_id,
@@ -496,6 +528,15 @@ class DeploymentService:
                     source="phase",
                 )
 
+            if deploy_request and deploy_request.get("create_as_staging_host"):
+                self._finalize_staging_host_registration(
+                    task_id=task_id,
+                    deploy_request=deploy_request,
+                    vm_ip=str(vm_ip or "").strip(),
+                    ansible_executed=ansible_executed,
+                    ansible_skipped_due_to_missing_ip=ansible_skipped_due_to_missing_ip,
+                )
+
             # 배포 성공
             task_manager.update_status(task_id, TaskStatus.SUCCESS)
             task_manager.append_log(task_id, "\n=== 배포 작업 완료 ===")
@@ -514,6 +555,71 @@ class DeploymentService:
                 )
         finally:
             self._cleanup_local_app_bundle(task_id, app_source_archive_path)
+
+    def _finalize_staging_host_registration(
+        self,
+        *,
+        task_id: str,
+        deploy_request: Dict[str, Any],
+        vm_ip: str,
+        ansible_executed: bool,
+        ansible_skipped_due_to_missing_ip: bool,
+    ) -> None:
+        if ansible_skipped_due_to_missing_ip or not vm_ip:
+            raise RuntimeError(
+                "Staging host preset requires a reachable VM IP and completed Ansible bootstrap."
+            )
+        if not ansible_executed:
+            raise RuntimeError(
+                "Staging host preset requires the Ansible bootstrap step to complete successfully."
+            )
+
+        node_name, vmid = self._resolve_vm_identity(
+            task_id=task_id,
+            deploy_request=deploy_request,
+            terraform_outputs={},
+        )
+        if not node_name or vmid is None:
+            raise RuntimeError("Staging host registration requires resolved node/vmid metadata.")
+
+        host_name = str(
+            deploy_request.get("server_name")
+            or (task_manager.get_status(task_id) or {}).get("metadata", {}).get("vm_name")
+            or ""
+        ).strip() or None
+
+        try:
+            registered = self.staging_host_registry_service.register_host(
+                {
+                    "environment": "staging",
+                    "node": node_name,
+                    "vmid": vmid,
+                    "name": host_name,
+                    "host_ip": vm_ip,
+                    "host_user": os.getenv("ANSIBLE_SSH_USER", "root"),
+                    "pool_key": "default",
+                    "role": "shared",
+                    "bootstrap_status": "ready",
+                    "enabled": True,
+                    "drain_mode": False,
+                    "source_task_id": task_id,
+                }
+            )
+        except StagingHostRegistryError as exc:
+            raise RuntimeError(f"Staging host registry update failed: {exc}") from exc
+
+        task_manager.update_metadata(
+            task_id,
+            {
+                "staging_host_registered": True,
+                "staging_host_registry_id": registered.get("id"),
+                "staging_host_pool_key": registered.get("pool_key"),
+            },
+        )
+        task_manager.append_log(
+            task_id,
+            f"Staging host registry 등록 완료: {registered.get('node')}/{registered.get('vmid')} -> {registered.get('host_ip')}",
+        )
 
     def _record_vm_identity_metadata(
         self,
@@ -900,10 +1006,16 @@ class DeploymentService:
             "gitlab_project_id": deploy_request.get("gitlab_project_id"),
             "path_with_namespace": deploy_request.get("path_with_namespace"),
             "deploy_branch": deploy_request.get("deploy_branch"),
+            "staging_target_mode": deploy_request.get("staging_target_mode"),
+            "target_host_ip": deploy_request.get("target_host_ip"),
+            "target_host_name": deploy_request.get("target_host_name"),
             "app_deploy_enabled": bool(deploy_request.get("app_deploy_enabled")),
             "compose_file": deploy_request.get("compose_file"),
             "app_port": deploy_request.get("app_port"),
+            "healthcheck_type": deploy_request.get("healthcheck_type"),
             "healthcheck_path": deploy_request.get("healthcheck_path"),
+            "healthcheck_port": deploy_request.get("healthcheck_port"),
+            "healthcheck_command": deploy_request.get("healthcheck_command"),
         }
         return {key: value for key, value in summary.items() if value not in (None, "", [])}
 
@@ -920,15 +1032,25 @@ class DeploymentService:
         project_slug = str(deploy_request.get("app_project_slug") or "").strip()
         source_ref = str(deploy_request.get("deploy_branch") or "").strip()
         project_id = deploy_request.get("gitlab_project_id")
+        healthcheck_type = str(deploy_request.get("healthcheck_type") or "").strip().lower()
         healthcheck_path = str(deploy_request.get("healthcheck_path") or "").strip()
+        healthcheck_command = str(deploy_request.get("healthcheck_command") or "").strip()
+        healthcheck_port = deploy_request.get("healthcheck_port")
         app_port = deploy_request.get("app_port")
 
         if not compose_file or not project_slug or not source_ref or project_id is None:
             raise RuntimeError("앱 배포에 필요한 GitLab source metadata가 부족합니다.")
         if isinstance(app_port, bool) or not isinstance(app_port, int) or app_port <= 0:
             raise RuntimeError("앱 배포에 필요한 app_port가 올바르지 않습니다.")
-        if not healthcheck_path.startswith("/"):
+        if healthcheck_type not in {"http", "tcp", "command", "none"}:
+            raise RuntimeError("앱 배포에 필요한 healthcheck_type이 올바르지 않습니다.")
+        if healthcheck_type == "http" and not healthcheck_path.startswith("/"):
             raise RuntimeError("앱 배포에 필요한 healthcheck_path가 올바르지 않습니다.")
+        if healthcheck_type in {"http", "tcp"}:
+            if isinstance(healthcheck_port, bool) or not isinstance(healthcheck_port, int) or healthcheck_port <= 0:
+                raise RuntimeError("앱 배포에 필요한 healthcheck_port가 올바르지 않습니다.")
+        if healthcheck_type == "command" and not healthcheck_command:
+            raise RuntimeError("앱 배포에 필요한 healthcheck_command가 올바르지 않습니다.")
 
         task_manager.append_log(task_id, "GitLab source archive 다운로드 준비 중...")
         task_manager.update_progress(
@@ -951,7 +1073,10 @@ class DeploymentService:
             "deploy_source_ref": source_ref,
             "deploy_compose_file": compose_file,
             "deploy_app_port": app_port,
+            "deploy_healthcheck_type": healthcheck_type,
             "deploy_healthcheck_path": healthcheck_path,
+            "deploy_healthcheck_port": healthcheck_port,
+            "deploy_healthcheck_command": healthcheck_command,
         }
         task_manager.append_log(
             task_id,

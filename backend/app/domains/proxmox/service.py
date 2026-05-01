@@ -8,6 +8,7 @@ Proxmox API 연동 서비스 패키지
 import os
 import re
 import time
+import ipaddress
 import requests
 from typing import Any, Dict, List, Optional
 from pathlib import Path
@@ -88,6 +89,110 @@ class ProxmoxService:
             return int(value)
         except (TypeError, ValueError):
             return int(default)
+
+    def _normalize_ipv4_address(self, value: object) -> Optional[str]:
+        text = str(value or "").strip()
+        if not text:
+            return None
+        if "/" in text:
+            text = text.split("/", 1)[0].strip()
+        if not text or text.lower() in {"dhcp", "auto"}:
+            return None
+        try:
+            parsed = ipaddress.ip_address(text)
+        except ValueError:
+            return None
+        if parsed.version != 4 or parsed.is_loopback or parsed.is_link_local:
+            return None
+        return str(parsed)
+
+    def _merge_ip_addresses(self, *groups: List[str]) -> List[str]:
+        merged: List[str] = []
+        seen = set()
+        for group in groups:
+            for candidate in group or []:
+                ip = self._normalize_ipv4_address(candidate)
+                if not ip or ip in seen:
+                    continue
+                seen.add(ip)
+                merged.append(ip)
+        return merged
+
+    def _extract_configured_ipv4_addresses(self, config_data: Dict[str, Any]) -> List[str]:
+        candidates: List[str] = []
+        if not isinstance(config_data, dict):
+            return candidates
+
+        for key, value in config_data.items():
+            if not str(key).startswith("ipconfig"):
+                continue
+            raw = str(value or "").strip()
+            if not raw:
+                continue
+            for part in raw.split(","):
+                name, _, part_value = part.partition("=")
+                if name.strip() != "ip":
+                    continue
+                normalized = self._normalize_ipv4_address(part_value)
+                if normalized:
+                    candidates.append(normalized)
+
+        return self._merge_ip_addresses(candidates)
+
+    def _extract_guest_agent_ipv4_addresses(self, payload: Any) -> List[str]:
+        interfaces: List[Dict[str, Any]] = []
+        if isinstance(payload, list):
+            interfaces = [item for item in payload if isinstance(item, dict)]
+        elif isinstance(payload, dict):
+            result = payload.get("result")
+            if isinstance(result, list):
+                interfaces = [item for item in result if isinstance(item, dict)]
+            elif isinstance(payload.get("interfaces"), list):
+                interfaces = [item for item in payload.get("interfaces", []) if isinstance(item, dict)]
+
+        addresses: List[str] = []
+        for interface in interfaces:
+            ip_list = interface.get("ip-addresses") or interface.get("ip_addresses") or []
+            if not isinstance(ip_list, list):
+                continue
+            for ip_info in ip_list:
+                if not isinstance(ip_info, dict):
+                    continue
+                ip_type = str(
+                    ip_info.get("ip-address-type") or ip_info.get("ip_address_type") or ""
+                ).strip().lower()
+                if ip_type and ip_type not in {"ipv4", "inet"}:
+                    continue
+                normalized = self._normalize_ipv4_address(
+                    ip_info.get("ip-address") or ip_info.get("ip_address")
+                )
+                if normalized:
+                    addresses.append(normalized)
+
+        return self._merge_ip_addresses(addresses)
+
+    def get_vm_ip_addresses(self, node: str, vmid: int) -> List[str]:
+        if not self.api_url:
+            return []
+
+        url = f"{self.api_url}/nodes/{node}/qemu/{vmid}/agent/network-get-interfaces"
+        timeout = (
+            self.api_connect_timeout_seconds,
+            min(self.api_read_timeout_seconds, 5.0),
+        )
+        try:
+            response = requests.get(
+                url,
+                headers=self._auth_headers(),
+                verify=not self.tls_insecure,
+                timeout=timeout,
+            )
+            if response.status_code >= 400:
+                return []
+            payload = response.json()
+            return self._extract_guest_agent_ipv4_addresses(payload.get("data"))
+        except (requests.RequestException, ValueError):
+            return []
 
     def _auth_headers(self) -> Dict[str, str]:
         return {
@@ -407,13 +512,16 @@ class ProxmoxService:
                 for vm in vm_list:
                     if vm.get("template") != 1:  # 템플릿이 아닌 것만
                         vmid = vm.get("vmid")
+                        config_data: Dict[str, Any] = {}
                         
                         # VM 상세 설정 조회 (디스크 정보 포함)
                         disks = []
                         total_disk_gb = 0
                         try:
                             config_result = self._make_request(f"/nodes/{node_name}/qemu/{vmid}/config")
-                            config_data = config_result.get("data", {})
+                            config_payload = config_result.get("data", {})
+                            if isinstance(config_payload, dict):
+                                config_data = config_payload
                             
                             # 디스크 필드 파싱 (scsi0, scsi1, virtio0, ide0, sata0 등)
                             for key, value in config_data.items():
@@ -464,6 +572,14 @@ class ProxmoxService:
                                     "storage": "unknown"
                                 })
                                 total_disk_gb = maxdisk_gb
+
+                        configured_ip_addresses = self._extract_configured_ipv4_addresses(config_data)
+                        guest_ip_addresses = (
+                            self.get_vm_ip_addresses(node_name, vmid)
+                            if str(vm.get("status", "")).strip().lower() == "running"
+                            else []
+                        )
+                        ip_addresses = self._merge_ip_addresses(configured_ip_addresses, guest_ip_addresses)
                         
                         vms.append({
                             "id": f"{node_name}/{vmid}",
@@ -477,6 +593,8 @@ class ProxmoxService:
                             "disk_gb": round(total_disk_gb, 2),  # 총 디스크 크기
                             "disks": disks,  # 디스크 목록
                             "uptime": vm.get("uptime", 0),
+                            "primary_ip": ip_addresses[0] if ip_addresses else None,
+                            "ip_addresses": ip_addresses,
                         })
             
             return sorted(
@@ -643,6 +761,48 @@ class ProxmoxService:
             return result.get("data", {})
         except Exception:
             return None
+
+    def wait_for_task_completion(
+        self,
+        node: str,
+        upid: str,
+        *,
+        timeout_seconds: int = 60,
+        poll_interval_seconds: float = 1.0,
+    ) -> Dict[str, Any]:
+        """
+        Proxmox task 가 종료될 때까지 폴링
+        """
+        timeout = max(1, int(timeout_seconds))
+        poll_interval = max(0.5, float(poll_interval_seconds))
+        deadline = time.monotonic() + timeout
+
+        while time.monotonic() <= deadline:
+            status = self.get_task_status(node, upid) or {}
+            status_text = str(status.get("status", "")).strip().lower()
+            exit_status = str(status.get("exitstatus", "")).strip()
+
+            if status_text == "stopped":
+                if not exit_status or exit_status.upper() == "OK":
+                    return {
+                        "success": True,
+                        "status": status_text,
+                        "exitstatus": exit_status or "OK",
+                    }
+                return {
+                    "success": False,
+                    "status": status_text,
+                    "exitstatus": exit_status,
+                    "error": f"Proxmox task failed with exit status: {exit_status}",
+                }
+
+            time.sleep(poll_interval)
+
+        return {
+            "success": False,
+            "status": "timeout",
+            "error": "Timed out while waiting for Proxmox task completion.",
+        }
 
     def get_task_log(self, node: str, upid: str, start: int = 0) -> List[Dict]:
         """

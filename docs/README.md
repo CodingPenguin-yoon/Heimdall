@@ -1,37 +1,27 @@
 # Documentation Index
 
-This index defines the active Heimdall documentation set. If a document is not linked here, treat it as legacy, historical, or otherwise unindexed reference material.
+This is the active documentation set for the current staging slice.
 
-## Product and direction
+## Read in this order
 
-Use these documents to understand what Heimdall is, what exists now, and where the product is going:
+1. [updates/2026-05-02_COMPLETED_WORK_SUMMARY.md](updates/2026-05-02_COMPLETED_WORK_SUMMARY.md)
+2. [architecture/STAGING_ARCHITECTURE.md](architecture/STAGING_ARCHITECTURE.md)
+3. [architecture/STAGING_CONTRACT.md](architecture/STAGING_CONTRACT.md)
+4. [operations/STAGING_RUNBOOK.md](operations/STAGING_RUNBOOK.md)
+5. [roadmap/NEXT_WORK.md](roadmap/NEXT_WORK.md)
+6. [updates/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md](updates/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md)
 
-- [README.md](../README.md)
-- [platform/00_PLATFORM_DESIGN_SUMMARY.md](platform/00_PLATFORM_DESIGN_SUMMARY.md)
-- [platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md](platform/01_GITLAB_ENV_PLATFORM_ARCHITECTURE.md)
-- [platform/02_IMPLEMENTATION_ROADMAP.md](platform/02_IMPLEMENTATION_ROADMAP.md)
-- [platform/03_PROJECT_MANIFEST_SPEC.md](platform/03_PROJECT_MANIFEST_SPEC.md)
-- [platform/04_MVP_PHASE_PLAN.md](platform/04_MVP_PHASE_PLAN.md)
+## Service docs
 
-## Operator setup
+- [../backend/README.md](../backend/README.md)
+- [../frontend/README.md](../frontend/README.md)
 
-Use these when running, configuring, or preparing the current platform:
+## Scope rule
 
-- [LOCAL_RUN_GUIDE.md](LOCAL_RUN_GUIDE.md)
-- [ENV_SETTINGS_EXPLAINED.md](ENV_SETTINGS_EXPLAINED.md)
-- [TEMPLATE_PREPARATION.md](TEMPLATE_PREPARATION.md)
-- [ANSIBLE_AUTOMATION.md](ANSIBLE_AUTOMATION.md)
-- [VM_CREATION_METHODS.md](VM_CREATION_METHODS.md)
+- `Create Instance` can provision and auto-register a staging host
+- `Instance List` shows staging host registry membership and VM IPs
+- `GitLab Workspace` stores an environment contract and previews pool / port availability
+- `Deploy Staging` uses the selected staging host pool
+- `production` contract storage exists, but production execution does not
 
-## Service-specific docs
-
-Use these for implementation details of the current application surfaces:
-
-- [backend/README.md](../backend/README.md)
-- [frontend/README.md](../frontend/README.md)
-
-## Reading rule
-
-- For current product behavior, start with the top-level [README.md](../README.md) and `Operator setup`.
-- For active product direction, use `Product and direction`.
-- If code and documentation disagree, trust the code.
+If code and docs disagree, trust the code.

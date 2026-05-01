@@ -22,6 +22,7 @@
     deploy_root_dir: "/opt/heimdall/apps/{{ deploy_project_slug_value }}"
     deploy_release_dir: "{{ deploy_root_dir }}/releases/{{ deploy_release_id_value }}"
     deploy_current_dir: "{{ deploy_root_dir }}/current"
+    cloud_init_wait_timeout_seconds_value: "{{ cloud_init_wait_timeout_seconds | default(300) | int }}"
 
   pre_tasks:
     - name: Wait for SSH to become ready
@@ -33,13 +34,34 @@
     - name: Wait for cloud-init to finish when present (initial attempt)
       shell: |
         if command -v cloud-init >/dev/null 2>&1; then
-          cloud-init status --wait
+          timeout {{ cloud_init_wait_timeout_seconds_value }}s cloud-init status --wait
         fi
       args:
         executable: /bin/bash
       ignore_unreachable: true
+      register: cloud_init_initial_wait
       changed_when: false
       failed_when: false
+
+    - name: Show cloud-init diagnostic when initial wait does not finish cleanly
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --long || true
+        else
+          echo "cloud-init not installed"
+        fi
+      args:
+        executable: /bin/bash
+      when: cloud_init_initial_wait.rc | default(0) != 0
+      changed_when: false
+      failed_when: false
+
+    - name: Print cloud-init diagnostic after initial wait when needed
+      debug:
+        var: cloud_init_initial_wait.stdout_lines
+      when:
+        - cloud_init_initial_wait is defined
+        - (cloud_init_initial_wait.stdout | default('') | trim) != ''
 
     - name: Give the guest a short recovery window after cloud-init network changes
       pause:
@@ -57,12 +79,41 @@
     - name: Wait for cloud-init to finish when present (final attempt)
       shell: |
         if command -v cloud-init >/dev/null 2>&1; then
-          cloud-init status --wait
+          timeout {{ cloud_init_wait_timeout_seconds_value }}s cloud-init status --wait
         fi
       args:
         executable: /bin/bash
+      register: cloud_init_final_wait
       changed_when: false
       failed_when: false
+
+    - name: Show cloud-init diagnostic when final wait does not finish cleanly
+      shell: |
+        if command -v cloud-init >/dev/null 2>&1; then
+          cloud-init status --long || true
+        else
+          echo "cloud-init not installed"
+        fi
+      args:
+        executable: /bin/bash
+      when: cloud_init_final_wait.rc | default(0) != 0
+      changed_when: false
+      failed_when: false
+
+    - name: Print cloud-init diagnostic after final wait when needed
+      debug:
+        var: cloud_init_final_wait.stdout_lines
+      when:
+        - cloud_init_final_wait is defined
+        - (cloud_init_final_wait.stdout | default('') | trim) != ''
+
+    - name: Fail when cloud-init is still not ready after both waits
+      fail:
+        msg: >-
+          cloud-init did not finish within {{ cloud_init_wait_timeout_seconds_value }} seconds.
+          Check cloud-init status on the guest before retrying this deployment.
+      when:
+        - cloud_init_final_wait.rc | default(0) != 0
 
     - name: Reset SSH connection before gathering facts
       meta: reset_connection
@@ -468,8 +519,11 @@
               - (deploy_compose_file | string | trim) != ""
               - deploy_app_port is defined
               - (deploy_app_port | int) > 0
-              - deploy_healthcheck_path is defined
-              - (deploy_healthcheck_path | string | regex_search('^/')) is not none
+              - deploy_healthcheck_type is defined
+              - deploy_healthcheck_type in ['http', 'tcp', 'command', 'none']
+              - deploy_healthcheck_type != 'http' or ((deploy_healthcheck_path | default('') | string | regex_search('^/')) is not none)
+              - deploy_healthcheck_type not in ['http', 'tcp'] or ((deploy_healthcheck_port | default(0) | int) > 0)
+              - deploy_healthcheck_type != 'command' or ((deploy_healthcheck_command | default('') | string | trim) != "")
             fail_msg: "App deploy extra vars are incomplete."
 
         - name: Ensure deployment directories exist
@@ -521,6 +575,37 @@
           register: deploy_compose_command
           changed_when: false
 
+        - name: Detect conflicting containers publishing requested app port
+          shell: |
+            set -euo pipefail
+            project_slug="{{ deploy_project_slug_value }}"
+            target_port="{{ deploy_app_port }}"
+
+            while IFS= read -r container_id; do
+              [ -n "$container_id" ] || continue
+              project_label=$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$container_id" 2>/dev/null || true)
+              if [ "$project_label" = "$project_slug" ]; then
+                continue
+              fi
+
+              published_ports=$(docker inspect --format '{{range $p, $conf := .NetworkSettings.Ports}}{{if $conf}}{{range $conf}}{{println .HostPort}}{{end}}{{end}}{{end}}' "$container_id" 2>/dev/null || true)
+              if printf '%s\n' "$published_ports" | grep -qx "$target_port"; then
+                container_name=$(docker inspect --format '{{.Name}}' "$container_id" 2>/dev/null | sed 's#^/##')
+                printf '%s\n' "${container_name:-$container_id}"
+              fi
+            done < <(docker ps -q)
+          args:
+            executable: /bin/bash
+          register: deploy_port_conflicts
+          changed_when: false
+
+        - name: Fail if requested app port is already used by another compose project
+          fail:
+            msg: >-
+              Requested app port {{ deploy_app_port }} is already published by
+              {{ deploy_port_conflicts.stdout_lines | join(', ') }}.
+          when: (deploy_port_conflicts.stdout_lines | default([])) | length > 0
+
         - name: Run docker compose app deployment
           shell: >
             {{ deploy_compose_command.stdout | trim }}
@@ -537,9 +622,9 @@
             or 'Starting' in (deploy_compose_up.stdout | default(''))
             or 'Building' in (deploy_compose_up.stdout | default(''))
 
-        - name: Wait for app healthcheck endpoint
+        - name: Wait for HTTP app healthcheck endpoint
           uri:
-            url: "http://127.0.0.1:{{ deploy_app_port }}{{ deploy_healthcheck_path }}"
+            url: "http://127.0.0.1:{{ deploy_healthcheck_port }}{{ deploy_healthcheck_path }}"
             method: GET
             status_code:
               - 200
@@ -548,6 +633,36 @@
           retries: 24
           delay: 5
           until: deploy_healthcheck.status in [200, 204]
+          when: deploy_healthcheck_type == 'http'
+
+        - name: Wait for TCP app healthcheck port
+          wait_for:
+            host: "127.0.0.1"
+            port: "{{ deploy_healthcheck_port }}"
+            timeout: 5
+            sleep: 2
+          register: deploy_healthcheck_tcp
+          retries: 24
+          delay: 5
+          until: deploy_healthcheck_tcp is succeeded
+          when: deploy_healthcheck_type == 'tcp'
+
+        - name: Wait for command-based app healthcheck
+          shell: "{{ deploy_healthcheck_command }}"
+          args:
+            chdir: "{{ deploy_current_dir }}"
+            executable: /bin/bash
+          register: deploy_healthcheck_command_result
+          changed_when: false
+          retries: 24
+          delay: 5
+          until: deploy_healthcheck_command_result.rc == 0
+          when: deploy_healthcheck_type == 'command'
+
+        - name: Skip app healthcheck by contract
+          debug:
+            msg: "App deploy healthcheck skipped because deploy.healthcheck.type=none"
+          when: deploy_healthcheck_type == 'none'
       when: deploy_app_requested
 
     - name: Playbook execution completed
