@@ -8,7 +8,6 @@ import {
   Cpu,
   HardDrive,
   Loader2,
-  Plus,
   RefreshCw,
   Server,
   Sparkles,
@@ -273,10 +272,10 @@ function OverviewDashboard({ onNavigate }) {
 
   const quickActions = [
     {
-      title: 'Create Instance',
-      description: '템플릿, 스토리지, 네트워크를 선택해서 새 VM을 시작합니다.',
-      icon: Plus,
-      onClick: () => onNavigate('/create'),
+      title: 'Worker / Host Registry',
+      description: 'Gjallar에서 준비된 host와 Heimdall worker 상태를 확인합니다.',
+      icon: Server,
+      onClick: () => onNavigate('/list'),
       accent: 'bg-sky-100 text-sky-700',
     },
     {

@@ -1,3 +1,4 @@
+// Legacy component: active /create route was removed on 2026-05-04. VM/Create Instance provisioning belongs to Gjallar. Do not re-route this wizard without a new ownership decision.
 import { useState, useEffect } from 'react'
 import { Server, Cpu, Network, ChevronRight, CheckCircle2, Loader2, HardDrive, Package, XCircle, Search } from 'lucide-react'
 import { getServers, getTemplates, getServerStorage, getServerNetworks, checkIpAvailability } from '../services/api'

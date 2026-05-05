@@ -44,48 +44,6 @@ apiClient.interceptors.response.use(
   }
 )
 
-// 배포 시작 API
-export const deployInfrastructure = async (config) => {
-  try {
-    // 새로운 마법사 스타일 config 또는 기존 config 모두 지원
-    const payload = config.server_id
-      ? {
-          server_id: config.server_id,
-          template_id: config.template_id,
-          storage_id: config.storage_id,
-          storage_type: config.storage_type,
-          network_ids: config.network_ids,
-          server_name: config.server_name,
-          cpu_cores: config.cpu_cores,
-          memory_gb: config.memory_gb,
-          disk_size_gb: config.disk_size_gb || 50,
-          ansible_packages: config.ansible_packages || [],
-          ansible_roles: config.ansible_roles || [],
-          vm_ip: config.vm_ip,
-          vm_gateway: config.vm_gateway,
-          create_as_staging_host: Boolean(config.create_as_staging_host),
-        }
-      : {
-          server_id: config.selectedServerId,
-          template_id: config.selectedTemplateId,
-          server_name: config.serverName || `instance-${Date.now()}`,
-          cpu_cores: config.cpuCores ? parseInt(config.cpuCores) : undefined,
-          memory_gb: config.memory ? parseInt(config.memory) : undefined,
-          disk_size_gb: parseInt(config.diskSize) || 50,
-          storage_id: config.selectedStorageId,
-          network_ids: config.selectedNetworkIds || [],
-          ansible_packages: config.selectedPackages || [],
-          ansible_roles: config.selectedRoles || [],
-          create_as_staging_host: Boolean(config.createAsStagingHost),
-        }
-    const response = await apiClient.post('/deploy', payload)
-    return response
-  } catch (error) {
-    console.error('Deploy API error:', error)
-    throw error
-  }
-}
-
 // 인스턴스 종료 후 삭제 API
 export const terminateInstance = async ({
   node,

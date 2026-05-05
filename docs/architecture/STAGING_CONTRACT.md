@@ -1,10 +1,12 @@
+> Historical note: Create Instance / VM provisioning ownership moved to Gjallar on 2026-05-04. Heimdall keeps only disabled/fail-closed legacy boundaries and consumes Gjallar-created workers/hosts. This document is retained for historical context until the legacy staging docs are fully rewritten.
+
 # Staging Contract
 
 This document defines the current staging input contract in code.
 
 ## 1. Create Instance contract
 
-`Create Instance` is still the source of truth for VM creation.
+`Create Instance` was the historical source of truth for VM creation. As of 2026-05-04, Gjallar is the VM provisioning source of truth.
 
 Required inputs:
 

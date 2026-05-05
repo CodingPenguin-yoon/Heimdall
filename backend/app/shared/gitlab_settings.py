@@ -260,16 +260,8 @@ def get_staging_environment_catalog() -> list[dict[str, object]]:
             }
         )
 
-    options.append(
-        {
-            "key": STAGING_ENV_DEDICATED_VM,
-            "label": "Dedicated staging VM",
-            "mode": STAGING_ENV_DEDICATED_VM,
-            "configured": dedicated_vm.is_configured,
-            "description": "Provision a system-managed dedicated VM through Terraform, then deploy the app.",
-        }
-    )
-
+    # Dedicated VM provisioning is owned by Gjallar. Heimdall only lists
+    # shared/pool host deployment targets that already exist.
     return options
 
 

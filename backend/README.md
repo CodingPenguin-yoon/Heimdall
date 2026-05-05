@@ -5,10 +5,9 @@ The backend is a FastAPI control plane for Heimdall staging operations.
 ## Main domains
 
 - `app/domains/deploy`
-  - Terraform apply
-  - post-clone VM adjustment
-  - Ansible bootstrap
-  - optional staging-host auto-registration
+  - legacy compatibility boundary only
+  - public `/api/deploy` must fail closed with HTTP 410 Gone
+  - historical Terraform/post-clone/Ansible code remains for later archival, but Heimdall no longer owns VM provisioning
 - `app/domains/staging`
   - staging host registry list and register APIs
   - pool grouping and live port preview
@@ -27,17 +26,11 @@ The backend is a FastAPI control plane for Heimdall staging operations.
 
 ## Current backend behavior
 
-### Create Instance path
+### Create Instance boundary
 
-`POST /api/deploy` can provision a VM from the current wizard inputs.
+`POST /api/deploy` is a deprecated compatibility route. It no longer provisions VMs from Heimdall and must return HTTP 410 Gone with Gjallar ownership guidance. VM/Create Instance provisioning now belongs to Gjallar.
 
-If `create_as_staging_host=true`:
-
-- task metadata records the preset
-- the backend requires VM IP resolution
-- the backend requires Ansible bootstrap to run successfully
-- only then is the VM registered into `staging_hosts`
-- the current registration default is `environment=staging`, `pool_key=default`
+Historical note: `create_as_staging_host=true` belonged to the old Heimdall Create Instance flow. That flow is no longer active; worker/host capacity should be provisioned by Gjallar and then registered/observed by Heimdall.
 
 Main files:
 

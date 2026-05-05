@@ -169,24 +169,28 @@ repo/task/worker/test/PR/staging verification → Heimdall에 유지
 
 ### Phase 1 — Worker registry
 
-- worker schema 정의
-- worker type: Codex / Claude / OpenCode / generic runner
-- auth status / health status / current task / last heartbeat 관리
+- [x] worker schema 1차 정의: `agent_workers` table / `/api/workers` API
+- [x] worker type 1차 지원: Codex / Claude / OpenCode
+- [x] auth status / health status / current task / last checked 관리
+- [x] `/api/workers*` fail-closed API key guard 적용
+- [x] worker heartbeat / health probe 실제 수집 및 worker_id hardening
+- [x] worker별 repo workspace / repo action contract 정의 (execution adapter는 후속 Set)
 
 ### Phase 2 — Agent task lifecycle
 
-- task queue
-- task 상태 전이
-- log/artifact 저장
-- 실패/취소/검토 필요 상태 분리
+- [x] task 상태 전이 1차 policy: queued/running/needs_review/failed/succeeded/cancelled
+- [ ] task queue
+- [ ] log/artifact 저장
+- [ ] 실패/취소/검토 필요 상태와 worker execution 연결
 
 ### Phase 3 — Repo execution flow
 
-- repo checkout/fetch/reset
-- branch/worktree 관리
-- agent command 실행
-- test/build/lint 결과 수집
-- diff summary와 PR 준비
+- [x] repo checkout/fetch/reset typed action contract
+- [x] branch/worktree lifecycle + dirty-tree guard contract
+- [ ] worker-side execution adapter
+- [ ] agent command 실행
+- [ ] test/build/lint 결과 수집
+- [ ] diff summary와 PR 준비
 
 ### Phase 4 — Gjallar integration
 

@@ -112,7 +112,7 @@ async def llm_chat(request: ChatRequest) -> ChatResponse:
         # - assistant_message 뒤에 요약을 붙이고
         # - data 필드에 JSON(raw_result)로 포함시킨다.
         #
-        # VM 생성 질의응답(슬롯 채우기)을 위해 추가된 보조 액션들도
+        # Gjallar-owned provisioning 안내와 read-only inventory 확인을 위한 보조 액션들도
         # 여기서 자동 실행하여 템플릿/스토리지/네트워크 옵션을
         # LLM 응답과 함께 프론트로 전달한다.
         # ------------------------------------------------------------------

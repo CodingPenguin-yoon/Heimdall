@@ -19,6 +19,28 @@ class PlatformMetadata(Base):
     value_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
 
 
+
+
+class AgentWorker(Base):
+    """Registered Codex/Claude/OpenCode execution worker."""
+
+    __tablename__ = "agent_workers"
+
+    worker_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False)
+    host_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    ssh_user: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    agent_types: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    agent_auth_status: Mapped[dict[str, str]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    labels_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    current_task_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    last_checked_at: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class GitLabProject(Base):
     """Persisted GitLab project inventory."""
 

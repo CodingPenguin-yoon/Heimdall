@@ -36,6 +36,8 @@ Heimdall = Hermes-controlled Agentic DevOps Execution Plane
 현재 repo-local docs에는 과거 staging-first 구현 문서가 남아 있다.
 아래 문서는 “현재 구현을 이해하기 위한 역사/전환 자료”로 읽고, 새 기능 설계의 기준으로는 shared storage를 우선한다.
 
+- [architecture/AGENT_WORKER_REGISTRY.md](architecture/AGENT_WORKER_REGISTRY.md)
+- [architecture/WORKER_WORKSPACE_CONTRACT.md](architecture/WORKER_WORKSPACE_CONTRACT.md)
 - [updates/2026-05-02_COMPLETED_WORK_SUMMARY.md](updates/2026-05-02_COMPLETED_WORK_SUMMARY.md)
 - [architecture/STAGING_ARCHITECTURE.md](architecture/STAGING_ARCHITECTURE.md)
 - [architecture/STAGING_CONTRACT.md](architecture/STAGING_CONTRACT.md)
@@ -91,9 +93,12 @@ Hermes → Gjallar provision plan → user approval → Gjallar VM bootstrap →
 ## Documentation cleanup TODO
 
 - Rewrite legacy staging docs around the new execution-plane model.
-- Define worker registry schema.
-- Define agent task lifecycle and log/artifact contract.
-- Define the Gjallar provision API contract from Heimdall's point of view.
+- [x] Define worker registry schema and 1차 `/api/workers` contract.
+- [x] Define agent task lifecycle state-transition policy.
+- [x] Add worker heartbeat/health probe self-report contract and worker_id hardening.
+- [x] Define worker workspace / repo execution contract and dirty-tree guard policy.
+- [ ] Define log/artifact report schema/retention beyond the Set 2 path convention.
+- [x] Define the Gjallar provision API contract from Heimdall's point of view.
 - Keep Codex OAuth/device-auth as a worker-local official auth state; never document raw tokens.
 
 If code and docs disagree, do not blindly trust old repo docs. Check shared storage first.

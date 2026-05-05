@@ -287,7 +287,7 @@ function LlmInfraChat() {
                     </div>
                   )}
 
-                  {/* VM 생성 질의응답용 옵션 리스트들 (템플릿 / 스토리지 / 네트워크) */}
+                  {/* Gjallar-owned provisioning 안내/인벤토리 확인용 read-only 옵션 리스트들 */}
                   {hasTemplates && (
                     <div className="mt-3">
                       <TemplateListPreview templates={msg.data.templates} />
@@ -676,7 +676,7 @@ function StatusPill({ status }) {
 }
 
 // ---------------------------------------------------------------------------
-// VM 생성 질의응답용 옵션 리스트 프리뷰 컴포넌트들
+// Gjallar-owned provisioning 안내/인벤토리 확인용 read-only 옵션 리스트 프리뷰 컴포넌트들
 // - 템플릿 / 스토리지 / 네트워크 후보를 간단히 표 형태로 보여줌
 // ---------------------------------------------------------------------------
 
@@ -763,7 +763,7 @@ function TemplateListPreview({ templates }) {
       </div>
 
       <p className="text-[11px] text-gray-500">
-        위 목록에서 원하는 템플릿의 <span className="font-semibold">template_id</span>를 골라서 말씀해 주세요.
+        위 목록은 read-only 인벤토리 확인용입니다. 새 VM provisioning은 Gjallar에서 진행해야 합니다.
       </p>
     </div>
   )
@@ -817,7 +817,7 @@ function StorageListPreview({ storages }) {
         </table>
       </div>
       <p className="text-[11px] text-gray-500">
-        위 목록에서 사용할 <span className="font-semibold">storage_id</span> 또는 이름을 골라서 말씀해 주세요.
+        위 목록은 read-only 스토리지 확인용입니다. 새 VM provisioning은 Gjallar에서 진행해야 합니다.
       </p>
     </div>
   )
@@ -866,7 +866,7 @@ function NetworkListPreview({ networks }) {
         </table>
       </div>
       <p className="text-[11px] text-gray-500">
-        위 목록에서 사용할 <span className="font-semibold">network_ids</span>(브리지 이름)을 한 개 이상 골라서 말씀해 주세요.
+        위 목록은 read-only 네트워크 확인용입니다. 새 VM provisioning은 Gjallar에서 진행해야 합니다.
       </p>
     </div>
   )

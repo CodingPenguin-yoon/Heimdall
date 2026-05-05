@@ -1,3 +1,5 @@
+> Historical note: Create Instance / VM provisioning ownership moved to Gjallar on 2026-05-04. Heimdall keeps only disabled/fail-closed legacy boundaries and consumes Gjallar-created workers/hosts. This document is retained for historical context until the legacy staging docs are fully rewritten.
+
 # Staging Runbook
 
 This runbook is the shortest path to validate the current staging slice.
@@ -40,7 +42,7 @@ pnpm frontend
 
 ## 2. Create a staging host
 
-Use `Create Instance`.
+Historical only: this used to use `Create Instance`; new VM provisioning should be handled in Gjallar.
 
 1. Select server, template, storage, and network.
 2. Optional: choose a static IP and gateway.

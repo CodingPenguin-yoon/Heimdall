@@ -4,7 +4,7 @@ The frontend is the React + Vite operator UI for Heimdall.
 
 ## Main screens
 
-- `Create Instance`
+- `Create Instance` removed from active UI; VM provisioning belongs to Gjallar
 - `Instance List`
 - `Task Board`
 - `Monitoring`
@@ -13,12 +13,13 @@ The frontend is the React + Vite operator UI for Heimdall.
 
 ## Current screen behavior
 
-### Create Instance
+### Create Instance boundary
 
-- provisions a VM from the current wizard inputs
-- supports `Create as staging host`
-- that preset keeps the current server/template/storage/network flow
-- the preset auto-includes `base` and `docker` roles
+- active Create Instance wizard/route has been removed from Heimdall
+- VM/Create Instance provisioning belongs to Gjallar
+- Heimdall consumes Gjallar-created workers/hosts via registry, heartbeat, and typed task execution
+- legacy `/api/deploy` must fail closed with HTTP 410 Gone
+- historical `Create as staging host` preset behavior is not part of the active UI; equivalent host/worker capacity should come from Gjallar provisioning
 
 ### Instance List
 

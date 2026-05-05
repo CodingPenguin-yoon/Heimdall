@@ -1,3 +1,5 @@
+> Historical note: Create Instance / VM provisioning ownership moved to Gjallar on 2026-05-04. Heimdall keeps only disabled/fail-closed legacy boundaries and consumes Gjallar-created workers/hosts. This document is retained for historical context until the legacy staging docs are fully rewritten.
+
 # Staging Architecture
 
 This document describes the staging architecture that exists in code today.
@@ -10,7 +12,7 @@ Heimdall is finishing a usable staging path before adding production.
 
 ### 1. Create Instance path
 
-`Create Instance` is still the VM provisioning entrypoint.
+`Create Instance` was the historical VM provisioning entrypoint. As of 2026-05-04, Gjallar owns VM provisioning and Heimdall keeps only disabled/fail-closed legacy boundaries.
 
 - Terraform clones the VM from the selected template
 - post-clone adjustments can apply CPU or memory changes
@@ -76,7 +78,7 @@ Main code:
 
 ### Flow A: create a staging host
 
-1. Open `Create Instance`.
+1. Historical only: this used to start from `Create Instance`; new VM provisioning should start in Gjallar.
 2. Select server, template, storage, and optional static IP.
 3. Enable `Create as staging host`.
 4. Terraform provisions the VM.

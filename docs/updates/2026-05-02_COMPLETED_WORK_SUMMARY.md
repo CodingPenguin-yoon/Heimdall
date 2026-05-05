@@ -1,3 +1,5 @@
+> Historical note: Create Instance / VM provisioning ownership moved to Gjallar on 2026-05-04. Heimdall keeps only disabled/fail-closed legacy boundaries and consumes Gjallar-created workers/hosts. This document is retained for historical context until the legacy staging docs are fully rewritten.
+
 # 2026-05-02 Completed Work Summary
 
 This document summarizes the work that is implemented in the repository as of 2026-05-02.
@@ -17,7 +19,7 @@ Heimdall now has a usable staging-first path that connects:
 
 ### 1. Staging host provisioning and registration
 
-Operators can still provision a VM from `Create Instance`, but the flow now also supports `Create as staging host`.
+Historical status at the time: operators could provision a VM from `Create Instance`, and the flow supported `Create as staging host`. Current status: VM provisioning moved to Gjallar on 2026-05-04.
 
 Current behavior:
 

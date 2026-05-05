@@ -8,11 +8,9 @@ from typing import Optional, List
 from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel, Field
 
-from app.domains.deploy.service import DeploymentService
 
 
 router = APIRouter()
-deployment_service = DeploymentService()
 
 
 class DeployRequest(BaseModel):
@@ -107,41 +105,20 @@ async def deploy(
     background_tasks: BackgroundTasks,
 ):
     """
-    인프라 배포 시작
+    Deprecated VM provisioning endpoint.
 
-    Terraform apply와 Ansible playbook을 순차적으로 실행합니다.
-    BackgroundTasks를 사용하여 비동기적으로 처리됩니다.
+    Heimdall no longer owns Proxmox VM/instance creation. Gjallar is the
+    provisioning owner; Heimdall consumes Gjallar-created hosts/workers through
+    typed registries and self-report APIs.
     """
-    try:
-        _validate_static_network(request)
-
-        if not (request.skip_terraform or False) and not request.template_id:
-            raise HTTPException(
-                status_code=400,
-                detail="현재 VM 생성은 template_id 기반 배포만 지원합니다.",
-            )
-
-        deploy_request_dict = request.model_dump(exclude_none=True)
-
-        task_id = deployment_service.start_deployment_with_request(
-            background_tasks=background_tasks,
-            deploy_request=deploy_request_dict,
-            skip_terraform=request.skip_terraform or False,
-            skip_ansible=request.skip_ansible or False,
-        )
-
-        return DeployResponse(
-            task_id=task_id,
-            message="배포 작업이 시작되었습니다.",
-            status="pending",
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"배포 시작 실패: {str(e)}",
-        )
+    raise HTTPException(
+        status_code=410,
+        detail=(
+            "VM/instance provisioning has moved to Gjallar. "
+            "Create hosts or VMs in Gjallar, then register the resulting "
+            "worker/host in Heimdall."
+        ),
+    )
 
 
 __all__ = ["router"]

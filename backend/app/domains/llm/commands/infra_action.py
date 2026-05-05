@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import BackgroundTasks
 from pydantic import BaseModel, Field
 
-from app.domains.deploy.service import DeploymentService
 from app.domains.proxmox.service import ProxmoxService
 
 
@@ -24,7 +23,7 @@ class InfraActionType(str, Enum):
     LIST_NODES = "list_nodes"
     GET_VM_DETAIL = "get_vm_detail"
     CREATE_VM = "create_vm"
-    # VM 생성 전 질의응답(슬롯 채우기)을 위한 보조 조회 액션들
+    # create_vm은 legacy disabled action이며, 아래 조회 액션은 read-only inventory/context 보조용이다.
     LIST_TEMPLATES = "list_templates"
     LIST_STORAGES = "list_storages"
     LIST_NETWORKS = "list_networks"
@@ -65,7 +64,6 @@ class InfraActionService:
 
     def __init__(self) -> None:
         self.proxmox_service = ProxmoxService()
-        self.deployment_service = DeploymentService()
 
     def execute_action(
         self,
@@ -79,7 +77,7 @@ class InfraActionService:
         if action.type == InfraActionType.GET_VM_DETAIL:
             return self._execute_get_vm_detail(action)
         if action.type == InfraActionType.CREATE_VM:
-            return self._execute_create_vm(action, background_tasks=background_tasks)
+            return self._execute_create_vm_disabled(action)
         if action.type == InfraActionType.LIST_TEMPLATES:
             return self._execute_list_templates(action)
         if action.type == InfraActionType.LIST_STORAGES:
@@ -185,14 +183,14 @@ class InfraActionService:
         )
 
     # ------------------------------------------------------------------
-    # VM 생성 전 질의응답(슬롯 채우기)을 위한 Proxmox 리소스 조회 액션들
+    # Gjallar-owned provisioning을 안내하기 전/후에 사용할 수 있는 read-only Proxmox resource 조회 액션들
     # ------------------------------------------------------------------
 
     def _execute_list_templates(self, action: InfraAction) -> InfraActionResult:
         """
         Proxmox VM 템플릿 목록 조회 액션.
 
-        - LLM이 VM 생성 옵션 안내를 위해 사용할 수 있도록
+        - LLM이 Gjallar-owned provisioning 안내나 inventory 확인을 위해 사용할 수 있도록
           사람이 읽기 좋은 요약 메시지와 함께 원본 리스트를 반환한다.
         """
         node = action.params.get("node") or action.params.get("server_id") or None
@@ -311,67 +309,17 @@ class InfraActionService:
             raw_result={"networks": networks},
         )
 
-    def _execute_create_vm(
-        self,
-        action: InfraAction,
-        background_tasks: Optional[BackgroundTasks],
-    ) -> InfraActionResult:
-        params = action.params or {}
-
-        if not params.get("template_id"):
-            return InfraActionResult(
-                result_message=(
-                    "VM 생성에는 template_id 가 필요합니다. "
-                    "먼저 템플릿 목록을 조회하고 하나를 선택해 주세요."
-                ),
-                raw_result={"missing": "template_id"},
-            )
-
-        if background_tasks is None:
-            return InfraActionResult(
-                result_message="VM 생성 액션에는 BackgroundTasks 인스턴스가 필요합니다.",
-                raw_result=None,
-            )
-
-        deploy_request: Dict[str, Any] = {}
-
-        if "server_name" in params:
-            deploy_request["server_name"] = params["server_name"]
-        if "server_id" in params:
-            deploy_request["server_id"] = params["server_id"]
-        if "template_id" in params:
-            deploy_request["template_id"] = params["template_id"]
-        if "cpu_cores" in params:
-            deploy_request["cpu_cores"] = params["cpu_cores"]
-        if "memory_gb" in params:
-            deploy_request["memory_gb"] = params["memory_gb"]
-        if "disk_size_gb" in params:
-            deploy_request["disk_size_gb"] = params["disk_size_gb"]
-        if "storage_id" in params:
-            deploy_request["storage_id"] = params["storage_id"]
-        if "network_ids" in params:
-            deploy_request["network_ids"] = params["network_ids"]
-
-        if "ansible_packages" in params:
-            deploy_request["ansible_packages"] = params["ansible_packages"]
-        if "ansible_roles" in params:
-            deploy_request["ansible_roles"] = params["ansible_roles"]
-
-        task_id = self.deployment_service.start_deployment_with_request(
-            background_tasks=background_tasks,
-            deploy_request=deploy_request,
-            skip_terraform=False,
-            skip_ansible=False,
-        )
-
-        server_name = deploy_request.get("server_name") or "(이름 미지정)"
-        msg = f"VM 생성 배포 작업을 시작했습니다. 이름: {server_name}, task_id: {task_id}"
-
+    def _execute_create_vm_disabled(self, action: InfraAction) -> InfraActionResult:
         return InfraActionResult(
-            result_message=msg,
+            result_message=(
+                "VM 생성은 이제 Heimdall에서 실행하지 않습니다. "
+                "Proxmox VM/instance provisioning은 Gjallar에서 수행하고, "
+                "생성된 host/worker만 Heimdall에 등록해 주세요."
+            ),
             raw_result={
-                "task_id": task_id,
-                "deploy_request": deploy_request,
+                "disabled": True,
+                "owner": "Gjallar",
+                "action_type": action.type.value,
             },
         )
 

@@ -850,7 +850,7 @@ class GitLabInventoryService:
                     "key": STAGING_ENV_DEDICATED_VM,
                     "mode": STAGING_ENV_DEDICATED_VM,
                     "available": True,
-                    "description": "Provision a system-managed dedicated VM through Terraform, then deploy the app.",
+                    "description": "Dedicated VM provisioning moved to Gjallar; register the resulting host in Heimdall.",
                 },
                 "shared_host": shared_host,
                 "dedicated_vm": dedicated_vm,
@@ -870,7 +870,7 @@ class GitLabInventoryService:
                     "available": True,
                     "configured": True,
                     "label": "Dedicated staging VM · legacy project profile",
-                    "description": "Use the previously saved per-project VM profile until system defaults are configured.",
+                    "description": "Dedicated VM provisioning moved to Gjallar; register the resulting host in Heimdall.",
                     "validation_error": None,
                 },
                 "shared_host": shared_host,
@@ -888,7 +888,7 @@ class GitLabInventoryService:
                 "key": STAGING_ENV_DEDICATED_VM,
                 "mode": STAGING_ENV_DEDICATED_VM,
                 "available": False,
-                "description": "Provision a system-managed dedicated VM through Terraform, then deploy the app.",
+                "description": "Dedicated VM provisioning moved to Gjallar; register the resulting host in Heimdall.",
                 "validation_error": (
                     dedicated_vm.validation_error
                     or (
@@ -1561,10 +1561,10 @@ class GitLabInventoryService:
         project_settings: GitLabProjectSettings | None,
     ) -> str:
         key = str(
-            project_settings.staging_environment_key if project_settings is not None else STAGING_ENV_DEDICATED_VM
-        ).strip() or STAGING_ENV_DEDICATED_VM
-        if key not in ALLOWED_STAGING_ENVIRONMENT_KEYS:
-            return STAGING_ENV_DEDICATED_VM
+            project_settings.staging_environment_key if project_settings is not None else STAGING_ENV_SHARED_HOST
+        ).strip() or STAGING_ENV_SHARED_HOST
+        if key != STAGING_ENV_SHARED_HOST:
+            return STAGING_ENV_SHARED_HOST
         return key
 
     def _build_staging_environment_options(self) -> list[dict[str, Any]]:
@@ -1616,11 +1616,7 @@ class GitLabInventoryService:
             payload.get("requested_app_port"),
             "requested_app_port",
         )
-        staging_environment_key = (
-            STAGING_ENV_SHARED_HOST
-            if deployment_environment == DEPLOYMENT_ENV_STAGING
-            else STAGING_ENV_DEDICATED_VM
-        )
+        staging_environment_key = STAGING_ENV_SHARED_HOST
         database_required = bool(payload.get("database_required", False))
         database_engine = str(payload.get("database_engine") or "").strip().lower() or None
         database_mode = str(payload.get("database_mode") or "").strip().lower() or None

@@ -34,7 +34,7 @@ class LLMMessage(BaseModel):
 class LLMActionDict(BaseModel):
     """LLM이 제안하는 인프라 액션의 JSON 표현"""
 
-    type: str = Field(description="액션 타입 (예: list_vms, create_vm 등)")
+    type: str = Field(description="액션 타입 (예: list_vms, list_nodes 등; create_vm은 legacy disabled action)")
     description: Optional[str] = Field(
         default=None,
         description="사용자에게 보여줄 자연어 설명 (선택)",
@@ -100,11 +100,12 @@ class LLMService:
                 context_text = str(extra_context)
 
         base_prompt = """
-당신은 Proxmox / Terraform / Ansible 기반으로 동작하는 인프라 ChatOps 도우미입니다.
+당신은 Heimdall의 Agentic DevOps Execution Plane을 보조하는 인프라 ChatOps 도우미입니다.
 
-- 사용자의 자연어 요청을 이해하여, 가상머신(VM) 조회/생성/상세 확인 등의 작업을 도와줍니다.
-- 실제 인프라 변경(생성/삭제/수정)은 직접 수행하지 않고, 반드시 actions 배열에 "제안"만 합니다.
-- 프론트엔드가 사용자의 확인을 받은 뒤 /api/llm/execute-action 으로 액션을 실행합니다.
+- 사용자의 자연어 요청을 이해하여, 가상머신(VM) 조회/상세 확인과 worker/task 운영 판단을 돕습니다.
+- VM/Create Instance 생성·삭제·provisioning ownership은 Gjallar에 있습니다.
+- Heimdall에서 실제 인프라 생성/삭제/수정 액션을 제안하거나 실행하도록 유도하지 않습니다.
+- 프론트엔드가 사용자의 확인을 받은 뒤 /api/llm/execute-action 으로 실행할 수 있는 것은 제한된 typed action뿐입니다.
 
 [응답 형식]
 반드시 아래 JSON 형식으로만 응답하세요:
@@ -112,7 +113,7 @@ class LLMService:
   "assistant_message": "사용자에게 보여줄 자연어 설명",
   "actions": [
     {
-      "type": "list_vms | list_nodes | get_vm_detail | create_vm | list_templates | list_storages | list_networks",
+      "type": "list_vms | list_nodes | get_vm_detail | list_templates | list_storages | list_networks",
       "description": "이 액션이 수행하는 일을 자연어로 한 줄 요약",
       "params": {
         "server_name": "예시-이름",
@@ -131,41 +132,16 @@ class LLMService:
 - JSON 이외의 텍스트(설명 문장 등)는 assistant_message 안에만 넣어야 합니다.
 - JSON 전체는 하나의 유효한 객체여야 하며, 주석이나 추가 문자열을 포함하면 안 됩니다.
 
-[VM 생성(create_vm) 시 동작 규칙]
-1) 사용자가 "VM 만들어줘", "Ubuntu 하나 대충" 같이 모호하게 요청하면,
-   곧바로 create_vm 액션을 생성하지 말고 다음 정보를 차례대로 물어보세요.
-   - 어느 Proxmox 노드(서버)에 만들지 (필요 시 list_nodes 액션으로 후보를 보여줍니다)
-   - 어떤 템플릿(template_id)으로 클론할지
-     (필요 시 list_templates 액션으로 후보를 보여줍니다)
-   - CPU 코어 수(cpu_cores), 메모리 용량(memory_gb), 디스크 용량(disk_size_gb)
-   - 어느 스토리지(storage_id)에 둘지 (필요 시 list_storages 액션으로 후보를 보여줍니다)
-   - 어느 네트워크 브리지들(network_ids)에 연결할지 (필요 시 list_networks 액션으로 후보를 보여줍니다)
+[VM 생성 요청 시 동작 규칙]
+1) 사용자가 "VM 만들어줘", "Ubuntu 하나 대충", "Create Instance"처럼 생성/provisioning을 요청하면,
+   Heimdall이 직접 생성하지 않는다고 설명하고 Gjallar가 VM/Proxmox provisioning owner임을 안내합니다.
 
-2) 위 필수 파라미터들이 모두 명확해지기 전까지는
-   - actions 배열에는 create_vm 대신 list_* 형태의 보조 조회 액션들만 넣어
-     사용자가 선택할 수 있는 옵션을 보여주도록 합니다.
+2) actions 배열에는 create_vm 액션을 넣지 않습니다.
+   create_vm은 legacy disabled action이며, backend에서도 실행하지 않고 Gjallar ownership 안내만 반환합니다.
 
-   특히 아래 규칙을 지킵니다.
-   - "어느 노드에 만들까요?" 라고 물을 때에는,
-     actions 배열에 반드시 하나의 list_nodes 액션을 포함합니다.
-       예: { "type": "list_nodes", "description": "선택 가능한 Proxmox 노드 목록 조회", "params": {} }
-   - "어떤 템플릿을 사용할까요?" 라고 물을 때에는,
-     actions 배열에 반드시 하나의 list_templates 액션을 포함합니다.
-   - "어느 스토리지에 둘까요?" 라고 물을 때에는,
-     actions 배열에 반드시 하나의 list_storages 액션을 포함합니다.
-   - "어느 네트워크(브리지)에 연결할까요?" 라고 물을 때에는,
-     actions 배열에 반드시 하나의 list_networks 액션을 포함합니다.
+3) 사용자가 현재 inventory/context를 확인하려는 경우에만 list_vms, list_nodes, list_templates, list_storages, list_networks 같은 read-only 조회 액션을 제안할 수 있습니다.
 
-3) 필수 파라미터가 모두 결정된 뒤에만
-   - actions 배열에 단일 create_vm 액션을 넣고,
-   - assistant_message 에서는 "이 설정으로 VM을 생성해도 될지"를 한국어로 요약해 다시 확인합니다.
-   (예: "노드 pve1, 템플릿 ubuntu-22.04, CPU 4, 메모리 8GB, 디스크 50GB, 스토리지 local-lvm, 네트워크 vmbr0 로 VM을 만들까요?")
-
-4) create_vm 액션의 params 에는 백엔드에서 사용하는 키 이름을 그대로 사용합니다:
-   - server_name (선택)
-   - server_id (또는 node 이름)
-   - template_id
-   - cpu_cores, memory_gb, disk_size_gb, storage_id, network_ids
+4) worker/host capacity가 필요하다는 판단은 Hermes가 Gjallar에 생성 plan을 요청하고, Gjallar 생성 완료 후 Heimdall worker registry에 등록하는 흐름으로 안내합니다.
 
 """.strip()
 
@@ -275,9 +251,12 @@ class LLMService:
                 if not isinstance(item, dict):
                     continue
                 try:
-                    actions.append(LLMActionDict(**item))
+                    action = LLMActionDict(**item)
                 except Exception:
                     continue
+                if action.type.strip().lower() == "create_vm":
+                    continue
+                actions.append(action)
 
         return LLMChatResult(
             assistant_message=assistant_message,

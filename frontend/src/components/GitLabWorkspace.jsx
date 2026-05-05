@@ -1478,7 +1478,7 @@ function GitLabWorkspace() {
                   먼저 `1. 배포 설정`에서 environment·pool·port를 정하고, 그 값을 바탕으로 `2. Manifest 생성`에서 runtime·compose·healthcheck를 채운 뒤, `3. 최종 점검`에서 저장과 `Deploy Staging`까지 이어갑니다.
                 </p>
                 <p className="rounded-xl border border-gray-200 bg-gray-50 px-4 py-3">
-                  host 생성과 registry 등록은 계속 `Create Instance`와 `Instance List`에서 관리합니다. 현재 실제 실행 가능한 환경은 `staging`입니다.
+                  host/VM 생성은 Gjallar에서 수행하고, Heimdall에서는 등록된 host pool과 worker 상태를 기준으로 app deploy 계약을 관리합니다. 현재 실제 실행 가능한 환경은 `staging`입니다.
                 </p>
               </div>
             </div>
@@ -2093,13 +2093,10 @@ function GitLabWorkspace() {
                                     </div>
                                     {environmentPoolState !== 'available' ? (
                                       <div className="mt-4 flex flex-wrap gap-3">
-                                        <Link
-                                          to="/create"
-                                          className="inline-flex items-center gap-2 rounded-lg border border-white/80 bg-white px-3 py-2 text-sm font-medium"
-                                        >
-                                          Create Instance
+                                        <span className="inline-flex items-center gap-2 rounded-lg border border-white/80 bg-white px-3 py-2 text-sm font-medium text-gray-700">
+                                          Create host in Gjallar
                                           <ArrowRight className="h-4 w-4" />
-                                        </Link>
+                                        </span>
                                         <Link
                                           to="/list"
                                           className="inline-flex items-center gap-2 rounded-lg border border-white/80 bg-white px-3 py-2 text-sm font-medium"
@@ -2126,16 +2123,13 @@ function GitLabWorkspace() {
                                             선택한 환경에 등록된 host pool이 없습니다
                                           </p>
                                           <p className="text-sm leading-6 text-amber-800">
-                                            먼저 `Create Instance`에서 host를 만들고 registry에 등록해야 환경 선택 이후 port 계약을 진행할 수 있습니다.
+                                            먼저 Gjallar에서 host/VM을 만들고 Heimdall registry 또는 deployment pool에 등록해야 환경 선택 이후 port 계약을 진행할 수 있습니다.
                                           </p>
                                           <div className="flex flex-wrap gap-3 pt-1">
-                                            <Link
-                                              to="/create"
-                                              className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800"
-                                            >
-                                              Create Instance
+                                            <span className="inline-flex items-center gap-2 rounded-lg border border-amber-300 bg-white px-3 py-2 text-sm font-medium text-amber-800">
+                                              Create host in Gjallar
                                               <ArrowRight className="h-4 w-4" />
-                                            </Link>
+                                            </span>
                                             <Link
                                               to="/list"
                                               className="inline-flex items-center gap-2 rounded-lg border border-amber-200 bg-amber-100/60 px-3 py-2 text-sm font-medium text-amber-900"
