@@ -25,11 +25,12 @@ from app.domains.devops.schemas import (
     ServiceEnvironmentsListResponse,
     ServiceSummaryResponse,
 )
+from app.domains.devops.fixtures import create_devops_catalog_service_from_env
 from app.domains.devops.service import DevOpsCatalogError, DevOpsCatalogService
 
 
 router = APIRouter()
-devops_catalog_service = DevOpsCatalogService()
+devops_catalog_service = create_devops_catalog_service_from_env()
 
 
 @router.get("/devops/services", response_model=DevOpsServicesListResponse)
