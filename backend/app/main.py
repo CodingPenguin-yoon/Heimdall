@@ -19,6 +19,7 @@ from app.domains.workers.router import router as workers_router
 from app.domains.gitlab.router import router as gitlab_router
 from app.domains.staging.router import router as staging_router
 from app.domains.webhooks.router import router as webhook_router
+from app.domains.devops.router import router as devops_router
 
 # 환경 변수 로드 (.env 파일에서)
 # proxmox_service.py에서도 로드하지만, 다른 서비스들을 위해 여기서도 로드
@@ -56,6 +57,7 @@ app.include_router(llm_router, prefix="/api", tags=["llm"])
 app.include_router(gitlab_router, prefix="/api", tags=["gitlab"])
 app.include_router(staging_router, prefix="/api", tags=["staging"])
 app.include_router(webhook_router, prefix="/api", tags=["webhooks"])
+app.include_router(devops_router, prefix="/api", tags=["devops"])
 
 
 @app.get("/")

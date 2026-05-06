@@ -6,6 +6,7 @@ import MonitoringDashboard from './components/MonitoringDashboard'
 import LlmInfraChat from './components/LlmInfraChat'
 import TaskBoard from './components/TaskBoard'
 import OverviewDashboard from './components/OverviewDashboard'
+import DevOpsDashboard from './components/DevOpsDashboard'
 import { Server, List, Activity, Sparkles, Clock3, GitBranch, LayoutDashboard } from 'lucide-react'
 
 const getActiveTab = (pathname) => {
@@ -13,6 +14,7 @@ const getActiveTab = (pathname) => {
   if (pathname.startsWith('/list')) return 'list'
   if (pathname.startsWith('/tasks')) return 'tasks'
   if (pathname.startsWith('/gitlab')) return 'gitlab'
+  if (pathname.startsWith('/devops')) return 'devops'
   if (pathname.startsWith('/monitoring')) return 'monitoring'
   if (pathname.startsWith('/assistant')) return 'assistant'
   return 'overview'
@@ -85,6 +87,17 @@ function App() {
               GitLab
             </button>
             <button
+              onClick={() => navigate('/devops')}
+              className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
+                activeTab === 'devops'
+                  ? 'text-emerald-700 border-emerald-700 bg-emerald-50'
+                  : 'text-gray-600 border-transparent hover:text-gray-900 hover:bg-gray-50'
+              }`}
+            >
+              <Activity className="w-5 h-5" />
+              DevOps
+            </button>
+            <button
               onClick={() => navigate('/monitoring')}
               className={`flex shrink-0 items-center gap-2 px-6 py-4 font-medium transition-colors border-b-2 ${
                 activeTab === 'monitoring'
@@ -141,6 +154,12 @@ function App() {
           <Route
             path="/gitlab"
             element={<GitLabWorkspace />}
+          />
+
+          {/* DevOps Dashboard Route */}
+          <Route
+            path="/devops"
+            element={<DevOpsDashboard />}
           />
 
           {/* Monitoring Dashboard Route */}

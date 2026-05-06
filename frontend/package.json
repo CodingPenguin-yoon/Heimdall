@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "vite build",
     "lint": "eslint . --ext js,jsx --report-unused-disable-directives --max-warnings 0",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test:devops": "node --test src/utils/devopsDashboard.test.mjs src/services/devopsApi.test.mjs src/components/DevOpsDashboard.test.mjs"
   },
   "dependencies": {
     "axios": "^1.6.2",
