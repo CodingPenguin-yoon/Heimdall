@@ -1,3 +1,5 @@
+> 역사 문서 안내: 이 문서는 legacy staging 기준의 next work 기록이다. 현재 active Heimdall MVP roadmap으로 읽지 않는다.
+
 # Next Work
 
 This document lists the next work after the current environment-contract slice.

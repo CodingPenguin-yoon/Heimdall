@@ -156,6 +156,100 @@ class PostgresConnectionResource(Base):
     updated_at: Mapped[str] = mapped_column(Text, nullable=False)
 
 
+class AgentTask(Base):
+    """Queued Hermes-owned agent task for a registered worker."""
+
+    __tablename__ = "agent_tasks"
+
+    task_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    agent_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    assigned_worker_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_workers.worker_id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    repo_url: Mapped[str] = mapped_column(Text, nullable=False)
+    target_ref: Mapped[str] = mapped_column(String(255), nullable=False)
+    workspace_action_request_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+    workspace_action_contract_json: Mapped[dict[str, Any]] = mapped_column(
+        JSON,
+        nullable=False,
+        default=dict,
+    )
+    labels_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    required_capabilities: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    allocation_status: Mapped[str] = mapped_column(String(64), nullable=False, default="queued")
+    needs_review_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cancellation_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    failure_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+    updated_at: Mapped[str] = mapped_column(Text, nullable=False)
+    started_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    finished_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class AgentTaskEvent(Base):
+    """Persisted typed event/log line for an agent task run."""
+
+    __tablename__ = "agent_task_events"
+
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    severity: Mapped[str] = mapped_column(String(16), nullable=False, default="info")
+    source: Mapped[str] = mapped_column(String(64), nullable=False, default="worker")
+    message: Mapped[str] = mapped_column(Text, nullable=False)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentTaskArtifact(Base):
+    """Artifact metadata linked to a worker run path outside the repo worktree."""
+
+    __tablename__ = "agent_task_artifacts"
+
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    artifact_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    relative_path: Mapped[str] = mapped_column(Text, nullable=False)
+    path: Mapped[str] = mapped_column(Text, nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_type: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
+class AgentTaskVerificationReport(Base):
+    """Structured verification summary for Hermes review handoff."""
+
+    __tablename__ = "agent_task_verification_reports"
+
+    task_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_tasks.task_id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    report_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False)
+    summary: Mapped[str] = mapped_column(Text, nullable=False)
+    checks_json: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    artifact_ids: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    metadata_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[str] = mapped_column(Text, nullable=False)
+
+
 class PlatformTask(Base):
     """Persisted task summary."""
 

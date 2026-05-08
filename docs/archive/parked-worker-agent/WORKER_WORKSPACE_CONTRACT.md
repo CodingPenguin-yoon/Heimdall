@@ -1,3 +1,5 @@
+> 보관 문서 안내: 이 문서는 parked worker/agent lane의 역사 기록이다. 현재 active Heimdall MVP 가이드는 아니며, 나중에 adapter/runner 검토 시 배경 자료로만 사용한다.
+
 # Worker Workspace / Repo Execution Contract
 
 Heimdall은 worker에게 raw shell을 열어 주는 도구가 아니다. 이 문서는 Set 2 기준으로 worker별 repo/workspace를 어떻게 할당하고, clone/fetch/reset/worktree 준비를 어떤 typed action으로 표현할지 정한다.

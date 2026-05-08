@@ -1,3 +1,5 @@
+> 역사 문서 안내: 이 문서는 staging-first 시점의 완료 기록이다. 현재 active Heimdall MVP 가이드는 아니며, 전환 배경 확인용으로만 유지한다.
+
 > Historical note: Create Instance / VM provisioning ownership moved to Gjallar on 2026-05-04. Heimdall keeps only disabled/fail-closed legacy boundaries and consumes Gjallar-created workers/hosts. This document is retained for historical context until the legacy staging docs are fully rewritten.
 
 # 2026-05-02 Completed Work Summary

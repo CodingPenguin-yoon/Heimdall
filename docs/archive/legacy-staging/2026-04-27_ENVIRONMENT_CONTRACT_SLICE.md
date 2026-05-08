@@ -1,3 +1,5 @@
+> 역사 문서 안내: 이 문서는 environment-contract 전환 초반의 slice 기록이다. 현재 active Heimdall MVP 가이드는 아니며, 전환 배경 확인용으로만 유지한다.
+
 # 2026-04-27 Environment Contract Slice
 
 This document records the work completed in the 2026-04-27 slice.

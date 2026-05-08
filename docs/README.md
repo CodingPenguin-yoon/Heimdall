@@ -1,104 +1,95 @@
-# Heimdall Documentation Index
+# Heimdall 문서 인덱스
 
-> 현재 문서 세트는 새 방향성으로 전환 중이다.
+이 디렉터리는 repo 안에서 현재 구현을 이해하기 위한 **code-local 문서 세트**다. 프로젝트 전체의 장기 source of truth는 `/mnt/hermes_data/프로젝트/헤임달`에 두고, 여기서는 repo에 실제로 들어온 구현·경계·검증을 최신 상태로 설명한다. Active 문서는 현재 제품 방향과 이미 들어온 구현을 설명하고, `docs/archive/` 아래 문서는 역사 기록만 담당한다.
 
-Heimdall의 새 기준은 다음이다.
-
-```text
-Heimdall = Hermes-controlled Agentic DevOps Execution Plane
-```
-
-즉 Heimdall은 자체 AI agent 두뇌가 아니라, Hermes가 호출하는 worker/task/repo/test/build/PR/staging verification 실행 계층이다.
-
----
-
-## Source of truth
-
-제품 방향과 현재 상태는 repo 문서보다 shared storage를 우선한다.
+## 현재 제품 방향
 
 ```text
-/mnt/hermes_data/프로젝트/헤임달
-/mnt/hermes_data/프로젝트/AI_Homelab_Control_Plane_방향성.md
+Heimdall = 사람이 쓰는 DevOps 운영 시스템
+Gjallar = VM 생성 및 Proxmox 운영 시스템
+Hermes = Heimdall/Gjallar를 대신 조작하고 요약하는 운영자
 ```
 
-먼저 읽을 문서:
+현재 MVP의 중심 범위:
 
-1. `/mnt/hermes_data/프로젝트/헤임달/README.md`
-2. `/mnt/hermes_data/프로젝트/헤임달/CURRENT_STATE.md`
-3. `/mnt/hermes_data/프로젝트/헤임달/TASKS.md`
-4. `/mnt/hermes_data/프로젝트/헤임달/DECISIONS.md`
-5. `/mnt/hermes_data/프로젝트/헤임달/01_아키텍처/Hermes_중심_Heimdall_방향성.md`
+- CI/CD 상태와 이력
+- Service catalog
+- `dev` / `staging` / `prod` 환경
+- Database health / migration / backup readiness
+- Deployment target reference
+- 검증 리포트, 로그, runbook
 
----
+현재 MVP의 비범위:
 
-## Active repo docs
+- VM 생성 및 Proxmox lifecycle 운영
+- provider-side deploy/retry 실행
+- raw shell 실행
+- secret 원문 저장
+- worker/agent를 제품 정체성으로 전면 배치하는 것
 
-현재 repo-local docs에는 과거 staging-first 구현 문서가 남아 있다.
-아래 문서는 “현재 구현을 이해하기 위한 역사/전환 자료”로 읽고, 새 기능 설계의 기준으로는 shared storage를 우선한다.
+## 먼저 읽을 문서
 
-- [architecture/AGENT_WORKER_REGISTRY.md](architecture/AGENT_WORKER_REGISTRY.md)
-- [architecture/WORKER_WORKSPACE_CONTRACT.md](architecture/WORKER_WORKSPACE_CONTRACT.md)
-- [updates/2026-05-02_COMPLETED_WORK_SUMMARY.md](updates/2026-05-02_COMPLETED_WORK_SUMMARY.md)
-- [architecture/STAGING_ARCHITECTURE.md](architecture/STAGING_ARCHITECTURE.md)
-- [architecture/STAGING_CONTRACT.md](architecture/STAGING_CONTRACT.md)
-- [operations/STAGING_RUNBOOK.md](operations/STAGING_RUNBOOK.md)
-- [roadmap/NEXT_WORK.md](roadmap/NEXT_WORK.md)
-- [updates/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md](updates/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md)
+- [current/CURRENT_IMPLEMENTATION.md](current/CURRENT_IMPLEMENTATION.md)
+- [current/RECENT_CHANGES_EXPLAINED.md](current/RECENT_CHANGES_EXPLAINED.md)
+- [architecture/DEVOPS_MVP_ARCHITECTURE.md](architecture/DEVOPS_MVP_ARCHITECTURE.md)
+- [architecture/GJALLAR_HEIMDALL_BOUNDARY.md](architecture/GJALLAR_HEIMDALL_BOUNDARY.md)
+- [implementation/BACKEND_DEVOPS_API.md](implementation/BACKEND_DEVOPS_API.md)
+- [implementation/FRONTEND_DEVOPS_DASHBOARD.md](implementation/FRONTEND_DEVOPS_DASHBOARD.md)
+- [implementation/SAFE_SMOKE_FIXTURES.md](implementation/SAFE_SMOKE_FIXTURES.md)
+- [implementation/PARKED_WORKER_AGENT_LANE.md](implementation/PARKED_WORKER_AGENT_LANE.md)
+- [implementation/VERIFICATION.md](implementation/VERIFICATION.md)
 
-Service docs:
+## 구현 상태
 
-- [../backend/README.md](../backend/README.md)
-- [../frontend/README.md](../frontend/README.md)
+이미 구현됨:
 
----
+- `backend/app/domains/devops/{schemas.py,service.py,router.py}` 기반 typed DevOps API skeleton
+- `backend/app/main.py`에 `/api/devops/*` 라우터 마운트
+- in-memory `DevOpsCatalogService`
+- service/environment/deployment target/CI run/DB status/dashboard read model
+- `HEIMDALL_DEVOPS_SMOKE_FIXTURES` 기반 opt-in smoke fixture seed
+- `/devops` read-only dashboard와 GET 전용 frontend API client
 
-## New scope rule
+아직 구현되지 않음:
 
-### Keep / evolve inside Heimdall
+- DevOps catalog persistence
+- migration / durable storage
+- provider-side deploy / retry / rollback execution
+- VM lifecycle API under `/api/devops`
+- raw credential 저장
+- worker/agent runner를 현재 MVP의 주 실행 모델로 사용하는 것
 
-- worker registry
-- agent task lifecycle
-- repo / branch / worktree preparation
-- Codex / Claude / OpenCode execution wrapper
-- test / build / lint execution
-- diff / PR / staging verification report
-- task log / artifact storage
+중요한 nuance:
 
-### Move out to Gjallar
+- frontend는 read-only다.
+- 하지만 backend DevOps skeleton 전체가 GET-only는 아니다.
+- 현재 backend에는 auth 없는 in-memory POST route가 있으며, 이는 계약 검증과 API 형태 고정을 위한 skeleton이다.
 
-- Proxmox VM provisioning ownership
-- Terraform state ownership for VMs
-- VM lifecycle actions
-- Proxmox inventory / monitoring / risk dashboard
-- backup / snapshot / guest-agent / storage / owner policy checks
+## 아카이브
 
----
+아래 문서는 active guidance가 아니다. 새 설계나 구현의 기준으로 사용하지 말고, 이전 결정과 전환 이유를 확인할 때만 읽는다.
 
-## Relationship with Gjallar
+- [archive/legacy-staging/](archive/legacy-staging/)
+- [archive/parked-worker-agent/](archive/parked-worker-agent/)
 
-```text
-Gjallar provides infrastructure.
-Heimdall executes DevOps and agent work on that infrastructure.
-Hermes coordinates both.
-```
+legacy staging 문서:
 
-When Heimdall needs worker capacity, the target flow is:
+- [archive/legacy-staging/STAGING_ARCHITECTURE.md](archive/legacy-staging/STAGING_ARCHITECTURE.md)
+- [archive/legacy-staging/STAGING_CONTRACT.md](archive/legacy-staging/STAGING_CONTRACT.md)
+- [archive/legacy-staging/STAGING_RUNBOOK.md](archive/legacy-staging/STAGING_RUNBOOK.md)
+- [archive/legacy-staging/NEXT_WORK.md](archive/legacy-staging/NEXT_WORK.md)
+- [archive/legacy-staging/2026-05-02_COMPLETED_WORK_SUMMARY.md](archive/legacy-staging/2026-05-02_COMPLETED_WORK_SUMMARY.md)
+- [archive/legacy-staging/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md](archive/legacy-staging/2026-04-27_ENVIRONMENT_CONTRACT_SLICE.md)
 
-```text
-Hermes → Gjallar provision plan → user approval → Gjallar VM bootstrap → Heimdall worker registration → agent task execution
-```
+parked worker/agent 문서:
 
----
+- [archive/parked-worker-agent/AGENT_WORKER_REGISTRY.md](archive/parked-worker-agent/AGENT_WORKER_REGISTRY.md)
+- [archive/parked-worker-agent/WORKER_WORKSPACE_CONTRACT.md](archive/parked-worker-agent/WORKER_WORKSPACE_CONTRACT.md)
+- [archive/parked-worker-agent/AGENT_TASK_QUEUE_MVP.md](archive/parked-worker-agent/AGENT_TASK_QUEUE_MVP.md)
+- [archive/parked-worker-agent/AGENT_TASK_EVIDENCE_CONTRACT.md](archive/parked-worker-agent/AGENT_TASK_EVIDENCE_CONTRACT.md)
 
-## Documentation cleanup TODO
+## 문서 사용 규칙
 
-- Rewrite legacy staging docs around the new execution-plane model.
-- [x] Define worker registry schema and 1차 `/api/workers` contract.
-- [x] Define agent task lifecycle state-transition policy.
-- [x] Add worker heartbeat/health probe self-report contract and worker_id hardening.
-- [x] Define worker workspace / repo execution contract and dirty-tree guard policy.
-- [ ] Define log/artifact report schema/retention beyond the Set 2 path convention.
-- [x] Define the Gjallar provision API contract from Heimdall's point of view.
-- Keep Codex OAuth/device-auth as a worker-local official auth state; never document raw tokens.
-
-If code and docs disagree, do not blindly trust old repo docs. Check shared storage first.
+- 현재 제품 방향은 active 문서 기준으로 해석한다.
+- archive 문서는 historical banner가 붙어 있어도 구현 사실 참고용일 뿐이다.
+- code와 active docs가 충돌하면 먼저 현재 구현을 다시 확인한다.
