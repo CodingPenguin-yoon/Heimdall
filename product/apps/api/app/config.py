@@ -11,7 +11,14 @@ _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def _repo_root() -> Path:
-    return Path(__file__).resolve().parents[4]
+    configured = os.getenv("HEIMDALL_REPO_ROOT")
+    if configured:
+        return Path(configured).resolve()
+
+    path = Path(__file__).resolve()
+    if len(path.parents) > 4:
+        return path.parents[4]
+    return Path.cwd().resolve()
 
 
 def _clean_dotenv_value(value: str) -> str:

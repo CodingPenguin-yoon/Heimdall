@@ -59,3 +59,42 @@ venv/bin/python -m pytest
 cd product/apps/web
 pnpm build
 ```
+
+## Docker Build
+
+Build the API image:
+
+```bash
+docker build -t heimdall-api:local product/apps/api
+```
+
+Run the API image with access to the host Docker engine:
+
+```bash
+docker run --rm -p 8000:8000 \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  -v "$PWD/product-runtime:/var/lib/heimdall" \
+  heimdall-api:local
+```
+
+Build the Web image:
+
+```bash
+docker build -t heimdall-web:local product/apps/web
+```
+
+The Web image bakes in `VITE_API_BASE_URL` at build time. Override it when the
+API is not available from the browser at `http://127.0.0.1:8000`.
+
+```bash
+docker build \
+  --build-arg VITE_API_BASE_URL=http://127.0.0.1:8000 \
+  -t heimdall-web:local \
+  product/apps/web
+```
+
+Run the Web image:
+
+```bash
+docker run --rm -p 8080:80 heimdall-web:local
+```
