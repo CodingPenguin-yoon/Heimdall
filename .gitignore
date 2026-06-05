@@ -27,6 +27,12 @@ infra/terraform/.state-migration-backups/
 venv/
 */venv/
 
+# Python cache/test output
+__pycache__/
+*/__pycache__/
+.pytest_cache/
+*/.pytest_cache/
+
 # SSH 키 파일
 *.pem
 *.key
@@ -57,12 +63,28 @@ Thumbs.db
 # 로그 파일
 *.log
 
+# Node/Vite local output
+node_modules/
+*/node_modules/
+dist/
+*/dist/
+
 # 런타임 태스크 히스토리 캐시
 data/task_history.json
 data/task_history.tmp
 data/*.db
 data/*.db-shm
 data/*.db-wal
+legacy/old-devops-console/data/task_history.json
+legacy/old-devops-console/data/task_history.tmp
+legacy/old-devops-console/data/*.db
+legacy/old-devops-console/data/*.db-shm
+legacy/old-devops-console/data/*.db-wal
+product-runtime/
+product/apps/api/product-runtime/
+product/apps/api/**/*.db
+product/apps/api/**/*.db-shm
+product/apps/api/**/*.db-wal
 
 # 백업 파일
 *.bak
