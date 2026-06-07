@@ -154,10 +154,29 @@ def redaction_values_for_settings(settings: Settings) -> list[str]:
     if settings.github_api_token:
         header, encoded = _basic_auth_header(_provider_username(Provider.GITHUB.value), settings.github_api_token)
         values.extend([settings.github_api_token, header, encoded])
+    if settings.github_webhook_secret:
+        values.append(settings.github_webhook_secret)
     if settings.gitlab_api_token:
         header, encoded = _basic_auth_header(_provider_username(Provider.GITLAB.value), settings.gitlab_api_token)
         values.extend([settings.gitlab_api_token, header, encoded])
+    if settings.gitlab_webhook_secret:
+        values.append(settings.gitlab_webhook_secret)
     return _unique(values)
+
+
+def _child_provider_env(settings: Settings) -> list[str]:
+    env: list[str] = []
+    if settings.github_api_token:
+        env.append(f"HEIMDALL_GITHUB_API_TOKEN={settings.github_api_token}")
+    if settings.github_webhook_secret:
+        env.append(f"HEIMDALL_GITHUB_WEBHOOK_SECRET={settings.github_webhook_secret}")
+    if settings.gitlab_base_url:
+        env.append(f"HEIMDALL_GITLAB_BASE_URL={settings.gitlab_base_url}")
+    if settings.gitlab_api_token:
+        env.append(f"HEIMDALL_GITLAB_API_TOKEN={settings.gitlab_api_token}")
+    if settings.gitlab_webhook_secret:
+        env.append(f"HEIMDALL_GITLAB_WEBHOOK_SECRET={settings.gitlab_webhook_secret}")
+    return env
 
 
 def redact_text(value: str, redactions: Sequence[str]) -> str:
@@ -890,7 +909,7 @@ class RealLocalDockerExecutor:
         self._ensure_child_directory(paths.container_runtime, container_root, "child runtime")
         self._ensure_child_directory(paths.container_project_volumes, container_root, "child project volumes")
 
-        return [
+        docker_args = [
             "-v",
             "/var/run/docker.sock:/var/run/docker.sock",
             "-v",
@@ -906,6 +925,9 @@ class RealLocalDockerExecutor:
             "--env",
             "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
         ]
+        for value in _child_provider_env(self.settings):
+            docker_args.extend(["--env", value])
+        return docker_args
 
     def _ensure_child_directory(self, path: Path, root: Path, label: str) -> None:
         try:

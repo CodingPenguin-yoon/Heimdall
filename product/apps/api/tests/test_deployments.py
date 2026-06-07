@@ -215,10 +215,17 @@ def test_second_real_deploy_supersedes_previous_current_release(client, monkeypa
     assert project_after["current_commit_sha"] == "c" * 40
 
 
-def test_real_deploy_redacts_provider_token_from_logs_and_response(client, monkeypatch):
-    token = "super-secret-token"
-    encoded = base64.b64encode(f"x-access-token:{token}".encode("utf-8")).decode("ascii")
-    monkeypatch.setenv("HEIMDALL_GITHUB_API_TOKEN", token)
+def test_real_deploy_redacts_provider_tokens_and_webhook_secrets_from_logs_and_response(client, monkeypatch):
+    github_token = "github-super-secret-token"
+    github_webhook_secret = "github-super-secret-webhook"
+    gitlab_token = "gitlab-super-secret-token"
+    gitlab_webhook_secret = "gitlab-super-secret-webhook"
+    github_encoded = base64.b64encode(f"x-access-token:{github_token}".encode("utf-8")).decode("ascii")
+    gitlab_encoded = base64.b64encode(f"oauth2:{gitlab_token}".encode("utf-8")).decode("ascii")
+    monkeypatch.setenv("HEIMDALL_GITHUB_API_TOKEN", github_token)
+    monkeypatch.setenv("HEIMDALL_GITHUB_WEBHOOK_SECRET", github_webhook_secret)
+    monkeypatch.setenv("HEIMDALL_GITLAB_API_TOKEN", gitlab_token)
+    monkeypatch.setenv("HEIMDALL_GITLAB_WEBHOOK_SECRET", gitlab_webhook_secret)
     get_settings.cache_clear()
     project = create_project(client)
 
@@ -228,9 +235,16 @@ def test_real_deploy_redacts_provider_token_from_logs_and_response(client, monke
 
         def deploy_preview(self, request):
             return ExecutorDeploymentResult(
-                log_content=f"[workspace]\nraw {token}\nheader {encoded}\n\n[summary]\nok",
+                log_content=(
+                    f"[workspace]\nraw {github_token}\nheader {github_encoded}\nwebhook {github_webhook_secret}\n"
+                    f"gitlab {gitlab_token}\ngitlab header {gitlab_encoded}\ngitlab webhook {gitlab_webhook_secret}\n"
+                    "\n[summary]\nok"
+                ),
                 is_dry_run=False,
-                status_message=f"done without leaking {token}",
+                status_message=(
+                    f"done without leaking {github_token} {github_webhook_secret} "
+                    f"{gitlab_token} {gitlab_webhook_secret}"
+                ),
                 success=True,
                 resolved_commit_sha="d" * 40,
                 image_tag="heimdall/preview-api:ddddddd",
@@ -241,16 +255,20 @@ def test_real_deploy_redacts_provider_token_from_logs_and_response(client, monke
     deploy_response = client.post(f"/api/projects/{project['id']}/deployments", json={"ref": "main"})
     assert deploy_response.status_code == 201, deploy_response.text
     response_text = json.dumps(deploy_response.json())
-    assert token not in response_text
-    assert encoded not in response_text
+    for secret in (github_token, github_webhook_secret, gitlab_token, gitlab_webhook_secret):
+        assert secret not in response_text
+    assert github_encoded not in response_text
+    assert gitlab_encoded not in response_text
     assert "[redacted]" in response_text
 
     deployment_id = deploy_response.json()["deployment"]["id"]
     logs_response = client.get(f"/api/deployments/{deployment_id}/logs")
     assert logs_response.status_code == 200
     log_content = logs_response.json()["content"]
-    assert token not in log_content
-    assert encoded not in log_content
+    for secret in (github_token, github_webhook_secret, gitlab_token, gitlab_webhook_secret):
+        assert secret not in log_content
+    assert github_encoded not in log_content
+    assert gitlab_encoded not in log_content
     assert "[redacted]" in log_content
 
 

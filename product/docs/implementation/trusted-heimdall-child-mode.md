@@ -181,6 +181,17 @@ HEIMDALL_VOLUME_ROOT_HOST={HEIMDALL_CHILD_ROOT_HOST}/{project_id}/project-volume
 HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes
 ```
 
+When set on the outer API, these provider settings are also passed only to the
+child API container and are omitted when unset:
+
+```env
+HEIMDALL_GITHUB_API_TOKEN
+HEIMDALL_GITHUB_WEBHOOK_SECRET
+HEIMDALL_GITLAB_BASE_URL
+HEIMDALL_GITLAB_API_TOKEN
+HEIMDALL_GITLAB_WEBHOOK_SECRET
+```
+
 The minimum slice does not create or pass a child env file.
 
 ## UI, API, And YAML Rules

@@ -185,6 +185,17 @@ HEIMDALL_VOLUME_ROOT_HOST=/srv/heimdall/children/{project_id}/project-volumes
 HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes
 ```
 
+When configured on the outer API, provider settings are also injected into the
+child API service only. Unset values are omitted:
+
+```env
+HEIMDALL_GITHUB_API_TOKEN
+HEIMDALL_GITHUB_WEBHOOK_SECRET
+HEIMDALL_GITLAB_BASE_URL
+HEIMDALL_GITLAB_API_TOKEN
+HEIMDALL_GITLAB_WEBHOOK_SECRET
+```
+
 The outer executor also mounts these into the child API service only:
 
 ```text
@@ -195,15 +206,15 @@ The outer executor also mounts these into the child API service only:
 
 ## Inner API Runtime Values
 
-The child runner injects storage and volume env only. Non-secret inner API
-operation values may be supplied through the API service `runtime_env`:
+The child runner injects storage, volume, and configured provider settings.
+Other non-secret inner API operation values may be supplied through the API
+service `runtime_env`:
 
 ```env
 HEIMDALL_PUBLIC_BASE_URL=https://inner-api.example.com
 HEIMDALL_PREVIEW_HOST=127.0.0.1
 HEIMDALL_PREVIEW_PORT_START=19000
 HEIMDALL_PREVIEW_PORT_END=19999
-HEIMDALL_GITLAB_BASE_URL=https://gitlab.example.com
 ```
 
 Do not try to provide these in service `runtime_env`; they are reserved and are
@@ -219,12 +230,10 @@ HEIMDALL_VOLUME_ROOT_HOST
 HEIMDALL_VOLUME_ROOT_CONTAINER
 ```
 
-Provider token and webhook secret values are not currently supported through
-service `runtime_env`, because the project service model stores non-secret env
-values only. For an inner Heimdall that needs private repository access,
-provider validation, or webhook registration, use the manual inner API env-file
-flow for now, or add proper secret/env-file injection before relying on the
-outer-managed child project for private repos.
+Provider token and webhook secret values are not supported through service
+`runtime_env`, because the project service model stores non-secret env values
+only. Configure provider values on the outer API settings; the child runner
+passes them to the inner API container through Docker `--env` args.
 
 ## Inner Web Routing
 
@@ -330,6 +339,6 @@ the inner Heimdall state.
 - Never mount Docker socket into Web or normal preview containers.
 - Do not allow repo YAML to set child roots, Docker socket, host paths,
   privileged flags, or raw Docker arguments.
-- Keep provider tokens in operator-owned env files or future secret injection,
-  not in project service `runtime_env`.
+- Keep provider tokens and webhook secrets in outer operator-owned settings;
+  do not put them in project service `runtime_env`.
 - Use separate infrastructure for untrusted multi-tenant workloads.

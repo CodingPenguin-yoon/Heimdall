@@ -290,6 +290,17 @@ HEIMDALL_VOLUME_ROOT_HOST=/srv/heimdall/children/{project_id}/project-volumes
 HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes
 ```
 
+If configured on the outer API, provider settings are also injected into that
+same child API container and omitted when unset:
+
+```env
+HEIMDALL_GITHUB_API_TOKEN
+HEIMDALL_GITHUB_WEBHOOK_SECRET
+HEIMDALL_GITLAB_BASE_URL
+HEIMDALL_GITLAB_API_TOKEN
+HEIMDALL_GITLAB_WEBHOOK_SECRET
+```
+
 This minimum slice does not automate inner Web lifecycle, child env files, or
 project-volume mounts into user preview containers. Multi-service projects are
 allowed only when exactly one service is marked as the child API service.
