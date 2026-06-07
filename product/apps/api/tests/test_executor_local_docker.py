@@ -99,7 +99,15 @@ class StaticHealthClient:
         return self.status_code
 
 
-def make_settings(tmp_path: Path, *, github_token: str | None = None, gitlab_token: str | None = None) -> Settings:
+def make_settings(
+    tmp_path: Path,
+    *,
+    github_token: str | None = None,
+    gitlab_token: str | None = None,
+    child_runner_enabled: bool = False,
+    child_root_host: Path | None = None,
+    child_root_container: Path | None = None,
+) -> Settings:
     settings = Settings(
         runtime_dir=tmp_path / "runtime",
         database_url=f"sqlite:///{tmp_path / 'heimdall.db'}",
@@ -112,6 +120,9 @@ def make_settings(tmp_path: Path, *, github_token: str | None = None, gitlab_tok
         gitlab_base_url=None,
         gitlab_api_token=gitlab_token,
         gitlab_webhook_secret=None,
+        child_runner_enabled=child_runner_enabled,
+        child_root_host=child_root_host,
+        child_root_container=child_root_container,
     )
     settings.ensure_runtime_dirs()
     return settings
@@ -269,7 +280,172 @@ def test_real_local_docker_executor_success_fetches_builds_replaces_and_reports_
     assert "heimdall.release_id=release-1" in docker_run
     assert "heimdall.managed=true" in docker_run
     assert docker_run[docker_run.index("-p") + 1] == "127.0.0.1:18000:8080"
+    assert docker_run == [
+        "docker",
+        "run",
+        "-d",
+        "--name",
+        "heimdall-preview-preview-api",
+        "--label",
+        "heimdall.project_id=project-1",
+        "--label",
+        "heimdall.release_id=release-1",
+        "--label",
+        "heimdall.managed=true",
+        "-p",
+        "127.0.0.1:18000:8080",
+        "heimdall/preview-api:aaaaaaa",
+    ]
+    assert "--env-file" not in docker_run
+    assert "/var/run/docker.sock" not in docker_run
     assert health.calls == [("http://127.0.0.1:18000/health", 5.0)]
+
+
+def test_child_single_service_executor_adds_only_required_mounts_and_env(tmp_path):
+    host_root = tmp_path / "child-host"
+    container_root = tmp_path / "child-container"
+    host_root.mkdir()
+    container_root.mkdir()
+    settings = make_settings(
+        tmp_path,
+        child_runner_enabled=True,
+        child_root_host=host_root,
+        child_root_container=container_root,
+    )
+    project = make_project(run_as_heimdall_child=True)
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is True
+    runtime_dir = container_root / "project-1" / "runtime"
+    project_volumes_dir = container_root / "project-1" / "project-volumes"
+    assert runtime_dir.is_dir()
+    assert project_volumes_dir.is_dir()
+    assert not runtime_dir.is_symlink()
+    assert not project_volumes_dir.is_symlink()
+
+    docker_run = find_call(runner.calls, "run")
+    assert "--env-file" not in docker_run
+    assert [docker_run[index + 1] for index, value in enumerate(docker_run) if value == "-v"] == [
+        "/var/run/docker.sock:/var/run/docker.sock",
+        f"{host_root / 'project-1' / 'runtime'}:/var/lib/heimdall",
+        f"{host_root / 'project-1' / 'project-volumes'}:/host/project-volumes",
+    ]
+    assert [docker_run[index + 1] for index, value in enumerate(docker_run) if value == "--env"] == [
+        "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
+        "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
+        f"HEIMDALL_VOLUME_ROOT_HOST={host_root / 'project-1' / 'project-volumes'}",
+        "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
+    ]
+    assert docker_run[-1] == "heimdall/preview-api:aaaaaaa"
+
+
+def test_child_multi_service_executor_adds_child_args_only_to_marked_service(tmp_path):
+    host_root = tmp_path / "child-host"
+    container_root = tmp_path / "child-container"
+    host_root.mkdir()
+    container_root.mkdir()
+    settings = make_settings(
+        tmp_path,
+        child_runner_enabled=True,
+        child_root_host=host_root,
+        child_root_container=container_root,
+    )
+    project = make_multi_service_project(run_as_heimdall_child=True)
+    for service in project["services"]:
+        service["run_as_heimdall_child"] = service["name"] == "backend"
+    prepare_existing_multi_service_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is True
+    runtime_dir = container_root / "project-1" / "runtime"
+    project_volumes_dir = container_root / "project-1" / "project-volumes"
+    assert runtime_dir.is_dir()
+    assert project_volumes_dir.is_dir()
+
+    container_runs = [call for call in runner.calls if call[:3] == ["docker", "run", "-d"]]
+    assert len(container_runs) == 2
+    backend_run, frontend_run = container_runs
+    assert backend_run[backend_run.index("--name") + 1] == "heimdall-preview-portfolio-backend"
+    assert [backend_run[index + 1] for index, value in enumerate(backend_run) if value == "-v"] == [
+        "/var/run/docker.sock:/var/run/docker.sock",
+        f"{host_root / 'project-1' / 'runtime'}:/var/lib/heimdall",
+        f"{host_root / 'project-1' / 'project-volumes'}:/host/project-volumes",
+    ]
+    assert [value for index, value in enumerate(backend_run) if index > 0 and backend_run[index - 1] == "--env"] == [
+        "PORT=8000",
+        "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
+        "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
+        f"HEIMDALL_VOLUME_ROOT_HOST={host_root / 'project-1' / 'project-volumes'}",
+        "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
+    ]
+    assert frontend_run[frontend_run.index("--name") + 1] == "heimdall-preview-portfolio-frontend"
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in frontend_run
+    assert "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall" not in frontend_run
+
+    helper = find_call(runner.calls, "curlimages/curl:8.10.1", "http://backend:8000/health")
+    assert "/var/run/docker.sock:/var/run/docker.sock" not in helper
+    assert "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall" not in helper
+    for docker_run in [*container_runs, helper]:
+        assert "--env-file" not in docker_run
+        assert "--privileged" not in docker_run
+        assert "--volumes-from" not in docker_run
+
+
+def test_child_executor_rejects_symlinked_generated_child_directory(tmp_path):
+    host_root = tmp_path / "child-host"
+    container_root = tmp_path / "child-container"
+    outside = tmp_path / "outside-child"
+    host_root.mkdir()
+    container_root.mkdir()
+    outside.mkdir()
+    try:
+        (container_root / "project-1").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    settings = make_settings(
+        tmp_path,
+        child_runner_enabled=True,
+        child_root_host=host_root,
+        child_root_container=container_root,
+    )
+    project = make_project(run_as_heimdall_child=True)
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is False
+    assert "symlink" in result.status_message or "remain under" in result.status_message
+    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
 
 
 def test_multi_service_executor_fetches_once_builds_networks_labels_and_checks_internal_health(tmp_path):

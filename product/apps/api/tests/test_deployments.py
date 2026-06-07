@@ -334,6 +334,52 @@ def test_multi_service_real_deploy_creates_current_release_service_manifest(clie
     ]
 
 
+def test_multi_service_real_deploy_executor_request_includes_child_service_flag(client, monkeypatch, tmp_path):
+    host_root = tmp_path / "child-host"
+    container_root = tmp_path / "child-container"
+    host_root.mkdir()
+    container_root.mkdir()
+    monkeypatch.setenv("HEIMDALL_CHILD_RUNNER_ENABLED", "true")
+    monkeypatch.setenv("HEIMDALL_CHILD_ROOT_HOST", str(host_root))
+    monkeypatch.setenv("HEIMDALL_CHILD_ROOT_CONTAINER", str(container_root))
+    get_settings.cache_clear()
+
+    payload = multi_service_payload()
+    for service in payload["services"]:
+        service["run_as_heimdall_child"] = service["name"] == "backend"
+    create_response = client.post("/api/projects", json=payload)
+    assert create_response.status_code == 201, create_response.text
+    project = create_response.json()
+    commit_sha = "f" * 40
+
+    class ChildAwareExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def deploy_preview(self, request):
+            assert request.project["run_as_heimdall_child"] is True
+            services = {service["name"]: service for service in request.project["services"]}
+            assert services["backend"]["run_as_heimdall_child"] is True
+            assert services["frontend"]["run_as_heimdall_child"] is False
+            return ExecutorDeploymentResult(
+                log_content="[workspace]\nok\n\n[summary]\nok",
+                is_dry_run=False,
+                status_message="Multi-service preview deployment completed successfully.",
+                success=True,
+                resolved_commit_sha=commit_sha,
+                image_tag="heimdall/portfolio-frontend:fffffff",
+                image_id="sha256:frontend",
+            )
+
+    monkeypatch.setattr("app.services.deployments.RealLocalDockerExecutor", ChildAwareExecutor)
+
+    deploy_response = client.post(f"/api/projects/{project['id']}/deployments", json={"ref": "main"})
+    get_settings.cache_clear()
+
+    assert deploy_response.status_code == 201, deploy_response.text
+    assert deploy_response.json()["deployment"]["status"] == "success"
+
+
 def test_multi_service_real_deploy_failure_creates_no_release_or_manifest(client, monkeypatch):
     project = create_multi_service_project(client)
 

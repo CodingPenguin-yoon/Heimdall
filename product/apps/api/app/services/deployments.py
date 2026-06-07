@@ -36,7 +36,7 @@ from .executor_local_docker import (
     redact_text,
     redaction_values_for_settings,
 )
-from .projects import utc_now
+from .projects import require_child_runner_for_project, utc_now
 
 
 def _as_bool(value: object) -> bool:
@@ -159,6 +159,7 @@ def _single_project_service(project: dict[str, object]) -> dict[str, object]:
         "build_env": {},
         "runtime_env": {},
         "required_secrets": [],
+        "run_as_heimdall_child": _as_bool(project["run_as_heimdall_child"]),
     }
 
 
@@ -190,11 +191,23 @@ def _load_project_for_executor(connection: sqlite3.Connection, project_row: sqli
                 "build_env": _json_dict(data["build_env_json"]),
                 "runtime_env": _json_dict(data["runtime_env_json"]),
                 "required_secrets": _json_list(data["required_secrets_json"]),
+                "run_as_heimdall_child": _as_bool(data["run_as_heimdall_child"]),
             }
         )
     if not services:
         services = [_single_project_service(project)]
-    return {**project, "services": services}
+    if str(project.get("deploy_mode")) == "dockerfile":
+        services = [
+            {
+                **service,
+                "run_as_heimdall_child": _as_bool(project["run_as_heimdall_child"]),
+            }
+            for service in services
+        ]
+    project_child = _as_bool(project["run_as_heimdall_child"]) or any(
+        _as_bool(service.get("run_as_heimdall_child")) for service in services
+    )
+    return {**project, "run_as_heimdall_child": project_child, "services": services}
 
 
 def _public_service(project: dict[str, object]) -> dict[str, object]:
@@ -532,6 +545,7 @@ def _create_real_deployment(project_id: str, payload: DeploymentRequest) -> Depl
         project_row = _get_project_row(connection, project_id)
         project = _load_project_for_executor(connection, project_row)
         _ensure_no_active_deployment(connection, project_id)
+        require_child_runner_for_project(settings, project)
 
         previous_release_id = project["current_release_id"]
         previous_project_status = str(project["status"])

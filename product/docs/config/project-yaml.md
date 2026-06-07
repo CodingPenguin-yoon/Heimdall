@@ -84,6 +84,7 @@ services:
 - frontend/backend relative paths
 - database requirement metadata
 - required environment variable names
+- future logical volume needs by `name`, `target_path`, and `read_only`
 
 ## Forbidden In YAML
 
@@ -93,6 +94,23 @@ services:
 - SSH private key
 - raw env values
 - database password
+- secret values of any kind
+- VM host filesystem paths
+- Docker socket paths such as `/var/run/docker.sock`
+- Docker daemon configuration
+- child runner settings such as `run_as_heimdall_child`
+- privileged deploy profiles or privileged mount declarations
+- raw `docker.sock`, host path, or privileged Docker mount declarations
+- Heimdall runtime directories
+- `HEIMDALL_RUNTIME_DIR`
+- `HEIMDALL_DATABASE_URL`
+- `HEIMDALL_REPO_ROOT`
+- `HEIMDALL_VOLUME_ROOT_HOST`
+- `HEIMDALL_VOLUME_ROOT_CONTAINER`
+- `HEIMDALL_CHILD_RUNNER_ENABLED`
+- `HEIMDALL_CHILD_ROOT_HOST`
+- `HEIMDALL_CHILD_ROOT_CONTAINER`
+- generated project-volume host sources
 - assigned preview host port
 - current commit
 - current image tag
@@ -112,6 +130,35 @@ preview_port / host_port
 = stored in DB
 = should not be committed to repo config
 ```
+
+## Storage Rule
+
+Repo YAML must not store host paths or Docker privileges. It must never choose
+where a bind mount source lives on the VM, request child-runner mode, set child
+root env, declare privileged mounts, or request access to
+`/var/run/docker.sock`.
+
+DB/API logical volumes are the current Phase 1 source of truth. YAML
+import/export for volumes remains future, and the current executor does not
+generate project bind mounts. A future YAML shape may declare only logical
+volume needs matching the API model:
+
+```yaml
+volumes:
+  - name: uploads
+    target_path: /app/uploads
+    read_only: false
+  - name: static-cache
+    target_path: /app/.cache/static
+    read_only: false
+```
+
+In that future YAML model, Heimdall generates the host source under its managed
+`project-volumes` root and stores the generated mapping as operational state.
+The repo supplies intent; Heimdall supplies placement.
+
+The implementation plan for that future model is
+[Docker Project Volume Support Implementation Plan](../implementation/docker-project-volume-support.md).
 
 ## Source Of Truth Phases
 

@@ -30,6 +30,11 @@ def client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]:
         "HEIMDALL_GITLAB_WEBHOOK_SECRET",
         "GITLAB_WEBHOOK_SECRET",
         "GITLAB_SYSTEM_HOOK_SECRET",
+        "HEIMDALL_VOLUME_ROOT_HOST",
+        "HEIMDALL_VOLUME_ROOT_CONTAINER",
+        "HEIMDALL_CHILD_RUNNER_ENABLED",
+        "HEIMDALL_CHILD_ROOT_HOST",
+        "HEIMDALL_CHILD_ROOT_CONTAINER",
     ):
         monkeypatch.setenv(key, "")
 

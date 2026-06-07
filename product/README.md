@@ -28,6 +28,18 @@ GitHub or GitLab projects are registered in Heimdall. When the tracked branch is
 Start from the docs index:
 
 - [Docs README](docs/README.md)
+- [Self-hosting Storage Architecture](docs/architecture/self-hosting-storage.md)
+- [Self-hosting Docker Runbook](docs/operations/self-hosting-docker.md)
+
+## Self-hosting Notes
+
+The API image listens on `8000` and expects persistent runtime storage at
+`/var/lib/heimdall`. The Web image serves nginx on `80`, bakes
+`VITE_API_BASE_URL` at build time, and does not proxy `/api`.
+
+Mounting `/var/run/docker.sock` into the API container is high trust. It gives
+Heimdall effective control of the VM Docker daemon and should only be used for a
+trusted self-hosted controller.
 
 ## Run
 

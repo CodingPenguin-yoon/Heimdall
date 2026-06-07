@@ -15,11 +15,15 @@ Deployment worker/service
 Preview container on Heimdall server
 ```
 
-The current executor is a safe dry-run implementation. It records the deployment flow without cloning, building, or starting real containers.
+The current executor performs real local Dockerfile deploys when
+`dry_run=false`. Dry-run remains available as an explicit simulated deployment
+mode.
 
 ## Runtime Directories
 
-Runtime state should stay outside source files.
+Runtime state should stay outside source files. In a source checkout this
+defaults to `product-runtime/`. In the API image, the runtime directory is
+`/var/lib/heimdall` and should be backed by a VM host bind mount.
 
 ```text
 product-runtime/
@@ -43,6 +47,10 @@ HEIMDALL_PREVIEW_PORT_START
 HEIMDALL_PREVIEW_PORT_END
 ```
 
+For Docker self-hosting, nested Heimdall storage, host path mapping, and
+`docker.sock` trust boundaries, see
+[Self-hosting Storage Architecture](self-hosting-storage.md).
+
 ## Deployment Flow
 
 Manual deploy is the first-class workflow.
@@ -58,27 +66,46 @@ user clicks deploy
 -> release row created on success
 ```
 
-In the current dry-run executor:
+When `dry_run=false`:
+
+- the executor clones or fetches the repository workspace
+- Dockerfile images are built with configured non-secret `build_env` values as
+  build args
+- preview containers are started with configured non-secret `runtime_env`
+  values as environment variables
+- health checks run against the preview target
+- a successful deployment creates a non-dry-run current release
+
+When `dry_run=true`:
 
 - deployment status becomes `dry_run_success`
 - release status becomes `simulated`
 - no real current release is activated
 - rollback is explicitly unsupported for simulated releases
 
-## Future Executor Path
+Current limitations:
+
+- preview containers do not receive generated bind mounts
+- Compose mode is unsupported and rejected
+- Docker bind mount source paths resolve on the Docker daemon host VM, not
+  inside the Heimdall API container
+
+## Executor Path
 
 Keep the executor boundary clean:
 
 ```text
-local_docker dry-run
--> local_docker real Dockerfile mode
--> compose mode
+local_docker dry-run simulation
+local_docker real Dockerfile mode
+local_docker real multi-service Dockerfile mode
+-> compose mode, future only
 -> ssh_docker
 -> runner
 -> optional Gjallar target discovery
 ```
 
-Do not add remote target or Gjallar concepts before real single-server Docker deployment works.
+Do not add remote target or Gjallar concepts before the single-server Docker
+contract remains stable.
 
 ## Safety Rules
 
@@ -90,3 +117,6 @@ Do not add remote target or Gjallar concepts before real single-server Docker de
 - maintain one active deployment per project
 - dedupe webhook delivery IDs
 - redact token-like values from logs
+- treat `/var/run/docker.sock` as VM-level administrative trust when mounted
+  into the API container
+- never mount `/var/run/docker.sock` into user project preview containers

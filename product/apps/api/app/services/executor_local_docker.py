@@ -179,6 +179,18 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     return True
 
 
+def _as_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    if isinstance(value, int):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
 def _http_config_base(repo_url: str) -> str | None:
     parsed = urlparse(repo_url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -221,6 +233,28 @@ def _is_multi_service_project(project: dict[str, object]) -> bool:
     return str(project.get("deploy_mode") or "") == DeployMode.MULTI_SERVICE_DOCKERFILE.value
 
 
+def _is_child_service(service: dict[str, object]) -> bool:
+    return _as_bool(service.get("run_as_heimdall_child"))
+
+
+def _child_services(project: dict[str, object]) -> list[dict[str, object]]:
+    return [service for service in _project_services(project) if _is_child_service(service)]
+
+
+def _is_child_project(project: dict[str, object]) -> bool:
+    return _as_bool(project.get("run_as_heimdall_child")) or bool(_child_services(project))
+
+
+def _multi_service_child_state_error(project: dict[str, object]) -> str | None:
+    if not _is_multi_service_project(project):
+        return None
+    child_count = len(_child_services(project))
+    if _as_bool(project.get("run_as_heimdall_child")) or child_count > 0:
+        if child_count != 1:
+            return "Deployment failed: multi-service child mode requires exactly one service marked run_as_heimdall_child."
+    return None
+
+
 def _service_sort_key(service: dict[str, object]) -> tuple[int, str]:
     return (int(service.get("startup_order") or 0), str(service["name"]))
 
@@ -257,7 +291,27 @@ class RealLocalDockerExecutor:
         self.health_timeout_seconds = health_timeout_seconds
         self.health_interval_seconds = health_interval_seconds
 
+    def _failed_before_docker(self, deployment_id: str, message: str) -> ExecutorDeploymentResult:
+        log = SectionedLog(redaction_values_for_settings(self.settings))
+        log.section("summary")
+        log.add(f"{_now()} deployment {deployment_id} failed")
+        log.add(f"{_now()} {message}")
+        return ExecutorDeploymentResult(
+            log_content=log.content(),
+            is_dry_run=False,
+            status_message=message,
+            success=False,
+        )
+
     def deploy_preview(self, request: ExecutorDeploymentRequest) -> ExecutorDeploymentResult:
+        child_state_error = _multi_service_child_state_error(request.project)
+        if child_state_error:
+            return self._failed_before_docker(request.deployment_id, child_state_error)
+        if _is_child_project(request.project):
+            try:
+                self.settings.require_child_runner()
+            except ValueError as exc:
+                return self._failed_before_docker(request.deployment_id, f"Deployment failed: {exc}")
         if _is_multi_service_project(request.project):
             return self._deploy_multi_service_preview(request)
 
@@ -749,6 +803,8 @@ class RealLocalDockerExecutor:
                 docker_run.extend(["--env", f"{key}={runtime_env[key]}"])
         if bool(service["public"]):
             docker_run.extend(["-p", f"{project['preview_host']}:{project['preview_port']}:{service['container_port']}"])
+        if _is_child_service(service):
+            docker_run.extend(self._child_run_args(project_id))
         docker_run.append(image_tag)
 
         log.add(f"{_now()} starting container {container_name}")
@@ -795,30 +851,98 @@ class RealLocalDockerExecutor:
 
         container_name = f"heimdall-preview-{project['slug']}"
         port_mapping = f"{project['preview_host']}:{project['preview_port']}:{project['container_port']}"
+        docker_run = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            container_name,
+            "--label",
+            f"heimdall.project_id={project_id}",
+            "--label",
+            f"heimdall.release_id={request.release_id}",
+            "--label",
+            "heimdall.managed=true",
+            "-p",
+            port_mapping,
+        ]
+        if _is_child_project(project):
+            docker_run.extend(self._child_run_args(project_id))
+        docker_run.append(image_tag)
+
         log.add(f"{_now()} starting container {container_name}")
         self._run_checked(
-            [
-                "docker",
-                "run",
-                "-d",
-                "--name",
-                container_name,
-                "--label",
-                f"heimdall.project_id={project_id}",
-                "--label",
-                f"heimdall.release_id={request.release_id}",
-                "--label",
-                "heimdall.managed=true",
-                "-p",
-                port_mapping,
-                image_tag,
-            ],
+            docker_run,
             log=log,
             redactions=redactions,
             phase="Container",
             command_label="docker run",
         )
         return preview_unavailable
+
+    def _child_run_args(self, project_id: str) -> list[str]:
+        try:
+            _, container_root = self.settings.require_child_runner()
+            paths = self.settings.child_runner_paths(project_id)
+        except ValueError as exc:
+            raise ExecutorStepError(f"Container failed: {exc}") from exc
+
+        self._ensure_child_directory(paths.container_runtime, container_root, "child runtime")
+        self._ensure_child_directory(paths.container_project_volumes, container_root, "child project volumes")
+
+        return [
+            "-v",
+            "/var/run/docker.sock:/var/run/docker.sock",
+            "-v",
+            f"{paths.host_runtime}:/var/lib/heimdall",
+            "-v",
+            f"{paths.host_project_volumes}:/host/project-volumes",
+            "--env",
+            "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
+            "--env",
+            "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
+            "--env",
+            f"HEIMDALL_VOLUME_ROOT_HOST={paths.host_project_volumes}",
+            "--env",
+            "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
+        ]
+
+    def _ensure_child_directory(self, path: Path, root: Path, label: str) -> None:
+        try:
+            root_resolved = root.resolve(strict=True)
+            candidate = path.resolve(strict=False)
+        except (OSError, RuntimeError) as exc:
+            raise ExecutorStepError(f"Container failed: {label} path could not be resolved.") from exc
+        if not _is_relative_to(candidate, root_resolved):
+            raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.")
+
+        self._reject_symlink_components(path, root, root_resolved, label)
+        path.mkdir(parents=True, exist_ok=True)
+        self._reject_symlink_components(path, root, root_resolved, label)
+
+        try:
+            created = path.resolve(strict=True)
+        except (OSError, RuntimeError) as exc:
+            raise ExecutorStepError(f"Container failed: {label} path could not be checked after creation.") from exc
+        if not _is_relative_to(created, root_resolved):
+            raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.")
+        if path.is_symlink() or not path.is_dir():
+            raise ExecutorStepError(f"Container failed: {label} path must be a directory and not a symlink.")
+
+    def _reject_symlink_components(self, path: Path, root: Path, root_resolved: Path, label: str) -> None:
+        current = root
+        try:
+            relative_parts = path.relative_to(root).parts
+        except ValueError:
+            try:
+                relative_parts = path.resolve(strict=False).relative_to(root_resolved).parts
+            except ValueError as exc:
+                raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.") from exc
+            current = root_resolved
+        for part in relative_parts:
+            current = current / part
+            if current.exists() and current.is_symlink():
+                raise ExecutorStepError(f"Container failed: {label} path must not contain symlinks.")
 
     def _managed_container_ids(
         self,

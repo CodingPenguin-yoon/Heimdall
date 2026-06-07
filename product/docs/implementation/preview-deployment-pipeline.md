@@ -2,7 +2,9 @@
 
 ## Purpose
 
-This document is the implementation reference for moving Heimdall from dry-run deployments to real single-server preview deployments.
+This document is the implementation reference for real single-server preview
+deployments. The first real Dockerfile deploy path is now implemented; keep
+dry-run language here only for the explicit simulated mode.
 
 The target user flow is:
 
@@ -30,26 +32,30 @@ Already implemented:
 - GitHub/GitLab webhook secret verification
 - project registration and preview port allocation
 - manual deploy endpoint
-- deployment history, logs, and simulated release records
-- dry-run local Docker executor
+- deployment history, logs, and release records
+- dry-run local Docker executor for simulated deploys
+- real local Dockerfile deploys when `dry_run=false`
+- multi-service Dockerfile preview deploys
 
 Current deploy behavior:
 
 ```text
-manual deploy
--> synthetic commit
+manual deploy with dry_run=false
+-> clone or fetch tracked branch
+-> build Docker image from Dockerfile
+-> replace preview container
+-> health check
+-> release status current on success
+
+manual deploy with dry_run=true
 -> dry-run log
 -> deployment status dry_run_success
 -> release status simulated
--> no clone
--> no Docker build
--> no container
--> no current release
 ```
 
 ## Non-goals For The Next Implementation Goal
 
-Do not implement these in the first real executor slice:
+Do not add these to the local Dockerfile executor contract:
 
 - Kubernetes
 - Proxmox, VM, or LXC lifecycle
@@ -59,12 +65,14 @@ Do not implement these in the first real executor slice:
 - arbitrary shell command execution from UI
 - direct editing of repository files
 - production traffic routing
-- multi-service app orchestration
+- additional orchestration beyond the current Dockerfile and multi-service
+  Dockerfile modes
 - secret values in DB, logs, UI, YAML preview, or generated `.heimdall/project.yaml`
 
-## Desired First Real Deploy Slice
+## Real Deploy Behavior
 
-The next implementation goal should replace the dry-run manual deploy path with a real Dockerfile deployment mode, while keeping dry-run available as a fallback or explicit mode if needed.
+The real Dockerfile deployment mode should keep dry-run available as an
+explicit simulated mode.
 
 Minimum real deploy behavior:
 
@@ -199,6 +207,11 @@ docker run -d
   -p {preview_host}:{preview_port}:{container_port}
   {image_tag}
 ```
+
+Generated project-volume bind mounts are a separate planned extension. See
+[Docker Project Volume Support Implementation Plan](docker-project-volume-support.md).
+Current no-volume Dockerfile deploys should not add generated `--mount`
+arguments.
 
 Replacement behavior:
 
@@ -369,14 +382,14 @@ If Docker commands are wrapped in a local runner abstraction, tests should mock 
 
 ## Implementation Order
 
-Recommended next goal order:
+Maintenance notes for this path:
 
-1. Add executor mode selection and keep dry-run tests passing.
-2. Add workspace manager for clone/fetch with token-safe Git command construction.
-3. Add Docker command runner abstraction.
-4. Implement Dockerfile build.
-5. Implement container replace/run.
-6. Implement health check polling.
-7. Update deployment/release/project state transitions for real success/failure.
-8. Update UI labels from dry-run-only to real preview aware.
-9. Run validation gates and a manual local Docker smoke test.
+1. Keep executor mode selection and dry-run tests passing.
+2. Keep workspace clone/fetch token-safe.
+3. Keep Docker command execution behind the runner abstraction.
+4. Keep Dockerfile build and container replace/run behavior covered by tests.
+5. Keep health check polling covered by tests.
+6. Keep deployment/release/project state transitions covered for real
+   success/failure.
+7. Keep UI labels clear for dry-run and real preview records.
+8. Run validation gates and a manual local Docker smoke test after changes.

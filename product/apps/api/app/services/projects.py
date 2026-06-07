@@ -23,6 +23,7 @@ from ..validation import (
     validate_required_secrets,
     validate_repo_url,
     validate_service_name,
+    validate_service_volumes,
     validate_slug,
 )
 
@@ -79,10 +80,31 @@ def _single_service_from_project(project: dict[str, object]) -> dict[str, object
         "build_env": {},
         "runtime_env": {},
         "required_secrets": [],
+        "volumes": [],
+        "run_as_heimdall_child": _as_bool(project.get("run_as_heimdall_child")),
     }
 
 
-def _normalize_service_payloads(raw_services: object) -> list[dict[str, object]]:
+def _child_service_count(services: list[dict[str, object]]) -> int:
+    return sum(1 for service in services if _as_bool(service.get("run_as_heimdall_child")))
+
+
+def _multi_service_child_summary(services: list[dict[str, object]], top_level_requested: bool) -> bool:
+    child_count = _child_service_count(services)
+    if child_count > 1:
+        raise bad_request("Multi-service child mode requires exactly one service marked run_as_heimdall_child.")
+    if top_level_requested and child_count == 0:
+        raise bad_request(
+            "run_as_heimdall_child=true on a multi-service project requires exactly one service marked "
+            "run_as_heimdall_child."
+        )
+    return child_count == 1
+
+
+def _normalize_service_payloads(
+    raw_services: object,
+    existing_services_by_name: dict[str, dict[str, object]] | None = None,
+) -> list[dict[str, object]]:
     if not isinstance(raw_services, list) or not raw_services:
         raise bad_request("Multi-service Dockerfile deploy requires at least one service.")
 
@@ -112,6 +134,18 @@ def _normalize_service_payloads(raw_services: object) -> list[dict[str, object]]
             raise bad_request(f"services.{name}.runtime_env must be an object.")
         if not isinstance(required_secrets, list):
             raise bad_request(f"services.{name}.required_secrets must be a list.")
+        if "volumes" in raw_service and raw_service.get("volumes") is not None:
+            volumes = validate_service_volumes(raw_service.get("volumes"), f"services.{name}")
+        elif existing_services_by_name and name in existing_services_by_name:
+            volumes = validate_service_volumes(existing_services_by_name[name].get("volumes"), f"services.{name}")
+        else:
+            volumes = []
+        if "run_as_heimdall_child" in raw_service:
+            run_as_heimdall_child = _as_bool(raw_service.get("run_as_heimdall_child"))
+        elif existing_services_by_name and name in existing_services_by_name:
+            run_as_heimdall_child = _as_bool(existing_services_by_name[name].get("run_as_heimdall_child"))
+        else:
+            run_as_heimdall_child = False
 
         services.append(
             {
@@ -131,6 +165,8 @@ def _normalize_service_payloads(raw_services: object) -> list[dict[str, object]]
                 "build_env": validate_env_map(build_env, f"services.{name}.build_env"),
                 "runtime_env": validate_env_map(runtime_env, f"services.{name}.runtime_env"),
                 "required_secrets": validate_required_secrets(required_secrets),
+                "volumes": volumes,
+                "run_as_heimdall_child": run_as_heimdall_child,
             }
         )
 
@@ -183,17 +219,24 @@ def _normalize_project_payload(
 
     preview_port_raw = payload.get("preview_port", existing["preview_port"] if existing else None)
     preview_port = None if preview_port_raw is None else validate_preview_port(int(preview_port_raw), settings)
+    requested_child = _as_bool(
+        payload.get("run_as_heimdall_child", existing["run_as_heimdall_child"] if existing else False)
+    )
 
     services: list[dict[str, object]]
     if deploy_mode == DeployMode.MULTI_SERVICE_DOCKERFILE.value:
+        if payload.get("volumes") is not None:
+            raise bad_request("Top-level volumes are only supported for dockerfile deploy mode.")
         raw_services = payload.get("services", existing_services)
-        services = _normalize_service_payloads(raw_services)
+        existing_services_by_name = {str(service["name"]): service for service in existing_services or []}
+        services = _normalize_service_payloads(raw_services, existing_services_by_name)
         public_service = _public_service(services)
         build_context_path = str(public_service["build_context_path"])
         dockerfile_path = str(public_service["dockerfile_path"])
         container_port = int(public_service["container_port"])
         health_check_path = public_service["health_check_path"]
         health_check_url = None
+        run_as_heimdall_child = _multi_service_child_summary(services, requested_child)
     else:
         if payload.get("services") is not None:
             raise bad_request("services are only supported for multi_service_dockerfile deploy mode.")
@@ -213,6 +256,16 @@ def _normalize_project_payload(
             payload.get("health_check_path", existing["health_check_path"] if existing else None),
             payload.get("health_check_url", existing["health_check_url"] if existing else None),
         )
+        existing_app_service = next(
+            (service for service in existing_services or [] if str(service.get("name")) == "app"),
+            None,
+        )
+        if "volumes" in payload and payload.get("volumes") is not None:
+            volumes = validate_service_volumes(payload.get("volumes"), "volumes")
+        elif existing_app_service:
+            volumes = validate_service_volumes(existing_app_service.get("volumes"), "volumes")
+        else:
+            volumes = []
         services = [
             {
                 "name": "app",
@@ -225,11 +278,14 @@ def _normalize_project_payload(
                 "build_env": {},
                 "runtime_env": {},
                 "required_secrets": [],
+                "volumes": volumes,
+                "run_as_heimdall_child": requested_child,
             }
         ]
+        run_as_heimdall_child = requested_child
     auto_deploy_enabled = payload.get("auto_deploy_enabled", existing["auto_deploy_enabled"] if existing else False)
 
-    return {
+    normalized = {
         "name": name,
         "slug": slug,
         "provider": provider,
@@ -245,8 +301,11 @@ def _normalize_project_payload(
         "health_check_path": health_check_path,
         "health_check_url": health_check_url,
         "auto_deploy_enabled": bool(auto_deploy_enabled),
+        "run_as_heimdall_child": run_as_heimdall_child,
         "services": services,
     }
+    require_child_runner_for_project(settings, normalized)
+    return normalized
 
 
 def _fetch_latest_deployment(connection: sqlite3.Connection, project_id: str) -> dict[str, object] | None:
@@ -282,8 +341,10 @@ def _fetch_project_services(
     for row in rows:
         data = row_to_dict(row)
         assert data is not None
+        service_id = str(data["id"])
         services.append(
             {
+                "id": service_id,
                 "name": str(data["name"]),
                 "build_context_path": str(data["build_context_path"]),
                 "dockerfile_path": str(data["dockerfile_path"]),
@@ -294,6 +355,12 @@ def _fetch_project_services(
                 "build_env": _json_dict(data["build_env_json"]),
                 "runtime_env": _json_dict(data["runtime_env_json"]),
                 "required_secrets": _json_list(data["required_secrets_json"]),
+                "volumes": _fetch_service_volumes(connection, str(project["id"]), service_id),
+                "run_as_heimdall_child": (
+                    _as_bool(project.get("run_as_heimdall_child"))
+                    if str(project["deploy_mode"]) == DeployMode.DOCKERFILE.value
+                    else _as_bool(data["run_as_heimdall_child"])
+                ),
             }
         )
     if services:
@@ -303,40 +370,233 @@ def _fetch_project_services(
     return []
 
 
-def _replace_project_services(
+def _fetch_service_volumes(
+    connection: sqlite3.Connection,
+    project_id: str,
+    service_id: str,
+) -> list[dict[str, object]]:
+    rows = connection.execute(
+        """
+        SELECT id, name, target_path, read_only, source_relative_path, status
+        FROM project_service_volumes
+        WHERE project_id = ? AND service_id = ?
+        ORDER BY name ASC
+        """,
+        (project_id, service_id),
+    ).fetchall()
+    volumes: list[dict[str, object]] = []
+    for row in rows:
+        data = row_to_dict(row)
+        assert data is not None
+        volumes.append(
+            {
+                "id": str(data["id"]),
+                "name": str(data["name"]),
+                "target_path": str(data["target_path"]),
+                "read_only": _as_bool(data["read_only"]),
+                "source_relative_path": str(data["source_relative_path"]),
+                "status": str(data["status"]),
+            }
+        )
+    return volumes
+
+
+def _replace_service_volumes(
+    connection: sqlite3.Connection,
+    project_id: str,
+    service_id: str,
+    service_name: str,
+    volumes: list[dict[str, object]],
+    timestamp: str,
+) -> None:
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM project_service_volumes
+        WHERE project_id = ? AND service_id = ?
+        """,
+        (project_id, service_id),
+    ).fetchall()
+    existing_by_name = {str(row["name"]): row_to_dict(row) for row in rows}
+    retained_names: set[str] = set()
+
+    for volume in volumes:
+        name = str(volume["name"])
+        retained_names.add(name)
+        existing = existing_by_name.get(name)
+        if existing:
+            connection.execute(
+                """
+                UPDATE project_service_volumes
+                SET service_display_name_snapshot = ?, target_path = ?, read_only = ?, status = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    service_name,
+                    volume["target_path"],
+                    int(bool(volume["read_only"])),
+                    str(existing["status"] or "active"),
+                    timestamp,
+                    existing["id"],
+                ),
+            )
+            continue
+
+        volume_id = f"volume_{uuid.uuid4().hex[:12]}"
+        connection.execute(
+            """
+            INSERT INTO project_service_volumes (
+                id, project_id, service_id, service_display_name_snapshot, name, target_path,
+                read_only, source_relative_path, status, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                volume_id,
+                project_id,
+                service_id,
+                service_name,
+                name,
+                volume["target_path"],
+                int(bool(volume["read_only"])),
+                f"{project_id}/{service_id}/{volume_id}",
+                "active",
+                timestamp,
+                timestamp,
+            ),
+        )
+
+    for name, existing in existing_by_name.items():
+        if name not in retained_names:
+            connection.execute("DELETE FROM project_service_volumes WHERE id = ?", (existing["id"],))
+
+
+def _upsert_project_services(
     connection: sqlite3.Connection,
     project_id: str,
     services: list[dict[str, object]],
     timestamp: str,
 ) -> None:
-    connection.execute("DELETE FROM project_services WHERE project_id = ?", (project_id,))
-    for service in services:
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM project_services
+        WHERE project_id = ?
+        """,
+        (project_id,),
+    ).fetchall()
+    existing_by_name = {str(row["name"]): row_to_dict(row) for row in rows}
+    retained_service_ids: set[str] = set()
+    if any(_as_bool(service.get("run_as_heimdall_child")) for service in services):
         connection.execute(
-            """
-            INSERT INTO project_services (
-                id, project_id, name, build_context_path, dockerfile_path, container_port,
-                is_public, health_check_path, startup_order, build_env_json, runtime_env_json,
-                required_secrets_json, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                f"service_{uuid.uuid4().hex[:12]}",
-                project_id,
-                service["name"],
-                service["build_context_path"],
-                service["dockerfile_path"],
-                service["container_port"],
-                int(bool(service["public"])),
-                service["health_check_path"],
-                service["startup_order"],
-                json.dumps(service["build_env"], sort_keys=True),
-                json.dumps(service["runtime_env"], sort_keys=True),
-                json.dumps(service["required_secrets"]),
-                timestamp,
-                timestamp,
-            ),
+            "UPDATE project_services SET run_as_heimdall_child = 0 WHERE project_id = ?",
+            (project_id,),
         )
+
+    for service in services:
+        service_name = str(service["name"])
+        existing = existing_by_name.get(service_name)
+        if existing:
+            service_id = str(existing["id"])
+            connection.execute(
+                """
+                UPDATE project_services
+                SET build_context_path = ?, dockerfile_path = ?, container_port = ?, is_public = ?,
+                    health_check_path = ?, startup_order = ?, build_env_json = ?, runtime_env_json = ?,
+                    required_secrets_json = ?, run_as_heimdall_child = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    service["build_context_path"],
+                    service["dockerfile_path"],
+                    service["container_port"],
+                    int(bool(service["public"])),
+                    service["health_check_path"],
+                    service["startup_order"],
+                    json.dumps(service["build_env"], sort_keys=True),
+                    json.dumps(service["runtime_env"], sort_keys=True),
+                    json.dumps(service["required_secrets"]),
+                    int(_as_bool(service.get("run_as_heimdall_child"))),
+                    timestamp,
+                    service_id,
+                ),
+            )
+        else:
+            service_id = f"service_{uuid.uuid4().hex[:12]}"
+            connection.execute(
+                """
+                INSERT INTO project_services (
+                    id, project_id, name, build_context_path, dockerfile_path, container_port,
+                    is_public, health_check_path, startup_order, build_env_json, runtime_env_json,
+                    required_secrets_json, run_as_heimdall_child, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    service_id,
+                    project_id,
+                    service["name"],
+                    service["build_context_path"],
+                    service["dockerfile_path"],
+                    service["container_port"],
+                    int(bool(service["public"])),
+                    service["health_check_path"],
+                    service["startup_order"],
+                    json.dumps(service["build_env"], sort_keys=True),
+                    json.dumps(service["runtime_env"], sort_keys=True),
+                    json.dumps(service["required_secrets"]),
+                    int(_as_bool(service.get("run_as_heimdall_child"))),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+        retained_service_ids.add(service_id)
+        _replace_service_volumes(
+            connection,
+            project_id,
+            service_id,
+            service_name,
+            service.get("volumes") or [],
+            timestamp,
+        )
+
+    for existing in existing_by_name.values():
+        service_id = str(existing["id"])
+        if service_id not in retained_service_ids:
+            connection.execute(
+                "DELETE FROM project_service_volumes WHERE project_id = ? AND service_id = ?",
+                (project_id, service_id),
+            )
+            connection.execute(
+                "DELETE FROM project_services WHERE project_id = ? AND id = ?",
+                (project_id, service_id),
+            )
+
+
+def _require_volume_roots_if_needed(settings: Settings, services: list[dict[str, object]]) -> None:
+    if not any(service.get("volumes") for service in services):
+        return
+    try:
+        settings.require_volume_roots()
+    except ValueError as exc:
+        raise bad_request(str(exc)) from exc
+
+
+def require_child_runner_for_project(settings: Settings, project: dict[str, object]) -> None:
+    is_multi_service = str(project.get("deploy_mode")) == DeployMode.MULTI_SERVICE_DOCKERFILE.value
+    services = [service for service in project.get("services") or [] if isinstance(service, dict)]
+    child_count = _child_service_count(services)
+    child_requested = _as_bool(project.get("run_as_heimdall_child")) or (is_multi_service and child_count > 0)
+    if not child_requested:
+        return
+    if is_multi_service:
+        if child_count != 1:
+            raise bad_request("Multi-service child mode requires exactly one service marked run_as_heimdall_child.")
+    try:
+        settings.require_child_runner()
+    except ValueError as exc:
+        raise bad_request(str(exc)) from exc
 
 
 def _fetch_webhook_registration(connection: sqlite3.Connection, project_id: str) -> WebhookRegistrationRead | None:
@@ -378,6 +638,7 @@ def _serialize_project(connection: sqlite3.Connection, row: sqlite3.Row) -> Proj
     normalized = {
         **data,
         "auto_deploy_enabled": _as_bool(data["auto_deploy_enabled"]),
+        "run_as_heimdall_child": _as_bool(data["run_as_heimdall_child"]),
         "services": [ProjectServiceRead(**service) for service in _fetch_project_services(connection, data)],
     }
     return ProjectRead(
@@ -445,6 +706,7 @@ def list_projects() -> list[ProjectRead]:
 def create_project(payload: ProjectCreate) -> ProjectRead:
     settings = get_settings()
     normalized = _normalize_project_payload(payload.model_dump(), settings)
+    _require_volume_roots_if_needed(settings, normalized["services"])
     project_id = f"project_{uuid.uuid4().hex[:12]}"
     allocation_id = f"port_{uuid.uuid4().hex[:12]}"
     timestamp = utc_now()
@@ -459,10 +721,10 @@ def create_project(payload: ProjectCreate) -> ProjectRead:
                     id, name, slug, provider, repo_url, default_branch, tracked_branch,
                     deploy_mode, build_context_path, dockerfile_path, compose_file_path,
                     container_port, preview_host, preview_port, preview_url, health_check_path,
-                    health_check_url, auto_deploy_enabled, status, current_release_id,
+                    health_check_url, auto_deploy_enabled, run_as_heimdall_child, status, current_release_id,
                     current_commit_sha, created_at, updated_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -483,6 +745,7 @@ def create_project(payload: ProjectCreate) -> ProjectRead:
                     normalized["health_check_path"],
                     normalized["health_check_url"],
                     int(normalized["auto_deploy_enabled"]),
+                    int(normalized["run_as_heimdall_child"]),
                     ProjectStatus.NOT_DEPLOYED.value,
                     None,
                     None,
@@ -505,7 +768,7 @@ def create_project(payload: ProjectCreate) -> ProjectRead:
                     timestamp,
                 ),
             )
-            _replace_project_services(connection, project_id, normalized["services"], timestamp)
+            _upsert_project_services(connection, project_id, normalized["services"], timestamp)
         except sqlite3.IntegrityError as exc:
             message = str(exc).lower()
             if "projects.slug" in message:
@@ -536,6 +799,7 @@ def update_project(project_id: str, payload: ProjectUpdate) -> ProjectRead:
         if changes.get("status") == ProjectStatus.DISABLED.value:
             existing["status"] = ProjectStatus.DISABLED.value
         normalized = _normalize_project_payload(changes, settings, existing, existing_services)
+        _require_volume_roots_if_needed(settings, normalized["services"])
         preview_port = _allocate_preview_port(connection, settings, normalized["preview_port"], exclude_project_id=project_id)
         preview_url = f"http://{settings.preview_host}:{preview_port}"
         project_status = ProjectStatus.DISABLED.value if changes.get("status") == "disabled" else existing["status"]
@@ -548,7 +812,7 @@ def update_project(project_id: str, payload: ProjectUpdate) -> ProjectRead:
                 SET name = ?, slug = ?, provider = ?, repo_url = ?, default_branch = ?, tracked_branch = ?,
                     deploy_mode = ?, build_context_path = ?, dockerfile_path = ?, compose_file_path = ?,
                     container_port = ?, preview_host = ?, preview_port = ?, preview_url = ?, health_check_path = ?,
-                    health_check_url = ?, auto_deploy_enabled = ?, status = ?, updated_at = ?
+                    health_check_url = ?, auto_deploy_enabled = ?, run_as_heimdall_child = ?, status = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -569,6 +833,7 @@ def update_project(project_id: str, payload: ProjectUpdate) -> ProjectRead:
                     normalized["health_check_path"],
                     normalized["health_check_url"],
                     int(normalized["auto_deploy_enabled"]),
+                    int(normalized["run_as_heimdall_child"]),
                     project_status,
                     timestamp,
                     project_id,
@@ -588,7 +853,7 @@ def update_project(project_id: str, payload: ProjectUpdate) -> ProjectRead:
                     project_id,
                 ),
             )
-            _replace_project_services(connection, project_id, normalized["services"], timestamp)
+            _upsert_project_services(connection, project_id, normalized["services"], timestamp)
         except sqlite3.IntegrityError as exc:
             message = str(exc).lower()
             if "projects.slug" in message:

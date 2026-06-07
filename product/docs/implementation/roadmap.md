@@ -9,7 +9,9 @@ Implemented:
 - Project CRUD
 - Deployment, Release, PortAllocation, WebhookEvent models
 - manual deploy endpoint
-- dry-run local Docker executor interface
+- dry-run local Docker executor for simulated deploys
+- real local Dockerfile executor
+- multi-service Dockerfile preview deploy
 - sectioned deployment logs
 - GitHub/GitLab webhook endpoints
 - provider tokens loaded from ignored local `.env`
@@ -23,12 +25,11 @@ Implemented:
 Current executor behavior:
 
 ```text
-dry-run only
-no clone
-no Docker build
-no container start
-simulated release only
-rollback unsupported for simulated releases
+dry_run=false performs clone/fetch, Docker build, container start, health check
+dry_run=true records a simulated dry-run release
+preview containers do not receive generated bind mounts yet
+compose mode is unsupported
+rollback remains disabled for simulated releases
 ```
 
 ## Next Milestones
@@ -40,12 +41,12 @@ rollback unsupported for simulated releases
 5. Add provider token reference model.
 6. Add scoped token handling through `.env` or ignored runtime secrets.
 7. Add automatic webhook registration.
-8. Implement the [Preview Deployment Pipeline](preview-deployment-pipeline.md).
-9. Add real Git workspace clone/fetch.
-10. Add real local Dockerfile build/run executor.
-11. Add multi-service Dockerfile preview deploy.
-12. Add real rollback from single-service and multi-service release manifests.
-13. Add compose mode after Dockerfile modes are stable.
+8. Harden the [Preview Deployment Pipeline](preview-deployment-pipeline.md).
+9. Add
+   [generated project-volume bind mounts](docker-project-volume-support.md)
+   after the storage contract is implemented.
+10. Add real rollback from single-service and multi-service release manifests.
+11. Add compose mode after Dockerfile modes are stable.
 
 The multi-service direction is documented in [Multi-service Preview Deployment Plan](multi-service-preview.md).
 

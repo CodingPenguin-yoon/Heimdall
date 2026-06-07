@@ -28,6 +28,7 @@ SCHEMA_STATEMENTS = [
         health_check_path TEXT,
         health_check_url TEXT,
         auto_deploy_enabled INTEGER NOT NULL DEFAULT 0,
+        run_as_heimdall_child INTEGER NOT NULL DEFAULT 0,
         status TEXT NOT NULL,
         current_release_id TEXT,
         current_commit_sha TEXT,
@@ -49,10 +50,49 @@ SCHEMA_STATEMENTS = [
         build_env_json TEXT NOT NULL DEFAULT '{}',
         runtime_env_json TEXT NOT NULL DEFAULT '{}',
         required_secrets_json TEXT NOT NULL DEFAULT '[]',
+        run_as_heimdall_child INTEGER NOT NULL DEFAULT 0,
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         UNIQUE(project_id, name),
         FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_service_volumes (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        service_display_name_snapshot TEXT NOT NULL,
+        name TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        read_only INTEGER NOT NULL DEFAULT 0,
+        source_relative_path TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, service_id, name),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS release_service_volume_mounts (
+        id TEXT PRIMARY KEY,
+        release_id TEXT NOT NULL,
+        release_service_id TEXT,
+        project_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        project_service_volume_id TEXT NOT NULL,
+        service_display_name_snapshot TEXT NOT NULL,
+        volume_name_snapshot TEXT NOT NULL,
+        target_path TEXT NOT NULL,
+        read_only INTEGER NOT NULL DEFAULT 0,
+        source_relative_path TEXT NOT NULL,
+        host_source_path TEXT NOT NULL,
+        container_source_path TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        UNIQUE(release_id, project_service_volume_id),
+        FOREIGN KEY(release_id) REFERENCES releases(id) ON DELETE CASCADE,
+        FOREIGN KEY(project_service_volume_id) REFERENCES project_service_volumes(id)
     )
     """,
     """
@@ -175,6 +215,25 @@ SCHEMA_STATEMENTS = [
 ]
 
 
+def _ensure_projects_columns(connection: sqlite3.Connection) -> None:
+    columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(projects)").fetchall()}
+    if "run_as_heimdall_child" not in columns:
+        connection.execute("ALTER TABLE projects ADD COLUMN run_as_heimdall_child INTEGER NOT NULL DEFAULT 0")
+
+
+def _ensure_project_services_child_flag(connection: sqlite3.Connection) -> None:
+    columns = {str(row["name"]) for row in connection.execute("PRAGMA table_info(project_services)").fetchall()}
+    if "run_as_heimdall_child" not in columns:
+        connection.execute("ALTER TABLE project_services ADD COLUMN run_as_heimdall_child INTEGER NOT NULL DEFAULT 0")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_project_services_one_child_per_project
+        ON project_services(project_id)
+        WHERE run_as_heimdall_child = 1
+        """
+    )
+
+
 def connect(settings: Settings | None = None) -> sqlite3.Connection:
     active_settings = settings or get_settings()
     connection = sqlite3.connect(active_settings.database_path)
@@ -189,6 +248,8 @@ def init_db(settings: Settings | None = None) -> None:
     with connect(active_settings) as connection:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
+        _ensure_projects_columns(connection)
+        _ensure_project_services_child_flag(connection)
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:

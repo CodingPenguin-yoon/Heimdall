@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .models import DeployMode, Provider, TriggerType
 
@@ -59,6 +59,8 @@ class WebhookRegistrationRead(BaseModel):
 
 
 class ProjectCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=120)
     slug: str | None = Field(default=None, max_length=63)
     provider: Provider
@@ -74,10 +76,14 @@ class ProjectCreate(BaseModel):
     health_check_path: str | None = Field(default=None, max_length=255)
     health_check_url: str | None = Field(default=None, max_length=500)
     auto_deploy_enabled: bool = False
+    run_as_heimdall_child: bool = False
+    volumes: list["ProjectServiceVolumeConfig"] | None = None
     services: list["ProjectServiceConfig"] | None = None
 
 
 class ProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str | None = Field(default=None, min_length=1, max_length=120)
     slug: str | None = Field(default=None, max_length=63)
     provider: Provider | None = None
@@ -93,11 +99,32 @@ class ProjectUpdate(BaseModel):
     health_check_path: str | None = Field(default=None, max_length=255)
     health_check_url: str | None = Field(default=None, max_length=500)
     auto_deploy_enabled: bool | None = None
+    run_as_heimdall_child: bool | None = None
     status: Literal["disabled"] | None = None
+    volumes: list["ProjectServiceVolumeConfig"] | None = None
     services: list["ProjectServiceConfig"] | None = None
 
 
+class ProjectServiceVolumeConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=1, max_length=63)
+    target_path: str = Field(min_length=1, max_length=255)
+    read_only: bool = False
+
+
+class ProjectServiceVolumeRead(BaseModel):
+    id: str
+    name: str
+    target_path: str
+    read_only: bool
+    source_relative_path: str
+    status: str
+
+
 class ProjectServiceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=63)
     build_context_path: str = Field(default=".", max_length=255)
     dockerfile_path: str = Field(default="Dockerfile", max_length=255)
@@ -108,10 +135,14 @@ class ProjectServiceConfig(BaseModel):
     build_env: dict[str, str] = Field(default_factory=dict)
     runtime_env: dict[str, str] = Field(default_factory=dict)
     required_secrets: list[str] = Field(default_factory=list)
+    volumes: list[ProjectServiceVolumeConfig] = Field(default_factory=list)
+    run_as_heimdall_child: bool = False
 
 
 class ProjectServiceRead(ProjectServiceConfig):
-    pass
+    model_config = ConfigDict(extra="ignore")
+
+    volumes: list[ProjectServiceVolumeRead] = Field(default_factory=list)
 
 
 class ProjectRead(BaseModel):
@@ -133,6 +164,7 @@ class ProjectRead(BaseModel):
     health_check_path: str | None
     health_check_url: str | None
     auto_deploy_enabled: bool
+    run_as_heimdall_child: bool
     status: str
     current_release_id: str | None
     current_commit_sha: str | None

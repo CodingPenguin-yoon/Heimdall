@@ -23,6 +23,7 @@ function makeService(overrides = {}) {
     build_env_text: "",
     runtime_env_text: "",
     required_secrets_text: "",
+    run_as_heimdall_child: false,
     ...overrides,
   };
 }
@@ -47,6 +48,7 @@ function makeEmptyForm() {
     health_check_path: "/",
     startup_timeout_seconds: "60",
     auto_deploy_enabled: true,
+    run_as_heimdall_child: false,
     services: defaultServices(),
   };
 }
@@ -177,6 +179,7 @@ function servicePayload(service) {
     build_env: parseKeyValueLines(service.build_env_text),
     runtime_env: parseKeyValueLines(service.runtime_env_text),
     required_secrets: parseSecretNames(service.required_secrets_text),
+    run_as_heimdall_child: Boolean(service.run_as_heimdall_child),
   };
 }
 
@@ -199,6 +202,7 @@ function serviceToForm(service, fallbackPublic = false) {
     build_env_text: envMapToText(service.build_env),
     runtime_env_text: envMapToText(service.runtime_env),
     required_secrets_text: (service.required_secrets || []).join("\n"),
+    run_as_heimdall_child: Boolean(service.run_as_heimdall_child),
   };
 }
 
@@ -219,6 +223,9 @@ function projectToForm(project) {
               public: true,
               health_check_path: apiServices[0]?.health_check_path || project.health_check_path || "/",
               startup_order: apiServices[0]?.startup_order ?? 0,
+              run_as_heimdall_child: Boolean(
+                project.run_as_heimdall_child || apiServices[0]?.run_as_heimdall_child,
+              ),
             },
             true,
           ),
@@ -239,6 +246,7 @@ function projectToForm(project) {
     preview_port: project.preview_port ? String(project.preview_port) : "",
     health_check_path: previewService.health_check_path || "/",
     auto_deploy_enabled: Boolean(project.auto_deploy_enabled),
+    run_as_heimdall_child: Boolean(project.run_as_heimdall_child),
     services: normalizedServices,
   };
 }
@@ -247,6 +255,7 @@ function projectPayloadFromForm(formState) {
   const services = ensurePreviewEntry(formState.services);
   const deployMode = deployModeForServices(services);
   const previewService = services.find((service) => service.public) || services[0];
+  const hasHeimdallChildService = services.some((service) => service.run_as_heimdall_child);
   const basePayload = {
     name: formState.name,
     provider: formState.provider,
@@ -255,6 +264,7 @@ function projectPayloadFromForm(formState) {
     tracked_branch: formState.tracked_branch,
     deploy_mode: deployMode,
     auto_deploy_enabled: formState.auto_deploy_enabled,
+    run_as_heimdall_child: hasHeimdallChildService,
   };
   if (String(formState.preview_port || "").trim()) {
     basePayload.preview_port = Number(formState.preview_port);
@@ -413,6 +423,16 @@ function App() {
       services: current.services.map((service, serviceIndex) => ({
         ...service,
         public: serviceIndex === index,
+      })),
+    }));
+  }
+
+  function selectHeimdallChildService(index, checked) {
+    setForm((current) => ({
+      ...current,
+      services: current.services.map((service, serviceIndex) => ({
+        ...service,
+        run_as_heimdall_child: checked && serviceIndex === index,
       })),
     }));
   }
@@ -957,6 +977,7 @@ function App() {
                           <tr>
                             <th>Service</th>
                             <th>Preview role</th>
+                            <th>Heimdall child</th>
                             <th>Dockerfile</th>
                             <th>Port</th>
                             <th>Health</th>
@@ -967,6 +988,13 @@ function App() {
                             <tr key={service.name}>
                               <td className="mono">{service.name}</td>
                               <td>{serviceRoleLabel(service)}</td>
+                              <td>
+                                {service.run_as_heimdall_child ? (
+                                  <span className="badge tone-warning">API child</span>
+                                ) : (
+                                  "-"
+                                )}
+                              </td>
                               <td className="mono truncate-cell" title={service.dockerfile_path}>
                                 {service.dockerfile_path}
                               </td>
@@ -1290,6 +1318,14 @@ function App() {
                             onChange={() => selectPreviewService(index)}
                           />
                           <span>Preview entry</span>
+                        </label>
+                        <label className="switch-line">
+                          <input
+                            type="checkbox"
+                            checked={service.run_as_heimdall_child}
+                            onChange={(event) => selectHeimdallChildService(index, event.target.checked)}
+                          />
+                          <span>Heimdall API child</span>
                         </label>
                         <span className={`badge tone-${service.public ? "success" : "neutral"}`}>
                           {serviceRoleLabel(service)}

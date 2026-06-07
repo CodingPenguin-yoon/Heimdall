@@ -83,6 +83,9 @@ services:
 
 A service is the unit of build/run/health. A release is the project-level set of service images built from the same commit.
 
+Persistent per-service project volumes are separate planned work. See
+[Docker Project Volume Support Implementation Plan](docker-project-volume-support.md).
+
 ## Initial Scope
 
 Implement the next slice as local Dockerfile multi-service preview.
@@ -526,6 +529,7 @@ startup_order
 build_env_json
 runtime_env_json
 required_secrets_json
+run_as_heimdall_child
 created_at
 updated_at
 ```
@@ -704,6 +708,9 @@ YAML preview must still exclude:
 ## Rollback Direction
 
 Rollback should be project-level, not service-level, in the first implementation.
+When generated project volumes are introduced, image rollback must not imply
+application data rollback; the volume-specific policy is tracked in
+[Docker Project Volume Support Implementation Plan](docker-project-volume-support.md).
 
 Do this:
 
