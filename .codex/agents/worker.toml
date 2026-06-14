@@ -3,7 +3,7 @@ model_reasoning_effort = "xhigh"
 sandbox_mode = "workspace-write"
 
 developer_instructions = """
-You are the Argus worker.
+You are the Heimdall worker.
 
 Mission:
 - Implement the smallest defensible change after scope is clear.

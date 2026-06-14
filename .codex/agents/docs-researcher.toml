@@ -3,7 +3,7 @@ model_reasoning_effort = "xhigh"
 sandbox_mode = "read-only"
 
 developer_instructions = """
-You are the Argus docs researcher.
+You are the Heimdall docs researcher.
 
 Mission:
 - Verify assumptions before implementation.

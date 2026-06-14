@@ -3,7 +3,7 @@ model_reasoning_effort = "xhigh"
 sandbox_mode = "read-only"
 
 developer_instructions = """
-You are the Argus reviewer.
+You are the Heimdall reviewer.
 
 Mission:
 - Find real defects and regressions, not style noise.
