@@ -9,9 +9,7 @@ Dockerfile deploys when `dry_run=false`, but preview containers do not receive
 generated project bind mounts. `HEIMDALL_VOLUME_ROOT_HOST` and
 `HEIMDALL_VOLUME_ROOT_CONTAINER` are implemented as optional settings for API
 logical volume validation and persistence; executor-generated bind mounts are
-not implemented. `HEIMDALL_CHILD_RUNNER_ENABLED`,
-`HEIMDALL_CHILD_ROOT_HOST`, and `HEIMDALL_CHILD_ROOT_CONTAINER` are implemented
-for the separate nested child API minimum slice.
+not implemented.
 
 The architecture source of truth is
 [Self-hosting Storage Architecture](../architecture/self-hosting-storage.md).
@@ -29,29 +27,12 @@ This document is the implementation plan for that storage contract.
 
 ## Non-goals
 
-- External database provisioning or managed external DB support.
+- Managed project PostgreSQL provisioning or `DATABASE_URL` injection; see
+  [Managed Project PostgreSQL](../architecture/managed-project-postgresql.md).
 - Docker Compose support.
 - Arbitrary host path mounts.
 - Mounting `docker.sock` into user preview containers.
-- Child Heimdall instance auto-generation or child env-file generation.
-- Nested child API deployment. The child runner may mount a
-  `project-volumes` root into an inner Heimdall API, but that is not the same
-  as mounting project volumes into user preview containers.
 - Rollback of mounted application data.
-
-## Boundary With Nested Heimdall Child Deploy
-
-The nested child plan and this project-volume plan touch the same storage name
-but at different layers:
-
-- The nested child runner mounts
-  `{HEIMDALL_CHILD_ROOT_HOST}/{project_id}/project-volumes` into the inner
-  Heimdall API at `/host/project-volumes`.
-- This volume plan later teaches the inner executor to mount generated
-  `project-volumes/{project_id}/{service_id}/{volume_id}` directories into
-  user preview containers with Docker `--mount type=bind`.
-- Current completed volume work is DB/API/settings/validation only. User
-  preview container runtime mounts remain Phase 3 executor work.
 
 ## Storage Model
 

@@ -3,6 +3,9 @@ import { api } from "./api";
 
 const tabs = ["Projects", "Deployments", "Settings"];
 const MAX_FORM_SERVICES = 4;
+const DATABASE_RETRYABLE_STATUSES = new Set(["pending", "failed", "needs_repair"]);
+const DATABASE_DISABLED_STATUSES = new Set(["disabled", "purged"]);
+const DATABASE_PURGE_CONFIRMATION = "purge managed project database";
 let serviceFormKeySequence = 0;
 
 function nextServiceFormKey() {
@@ -23,7 +26,6 @@ function makeService(overrides = {}) {
     build_env_text: "",
     runtime_env_text: "",
     required_secrets_text: "",
-    run_as_heimdall_child: false,
     ...overrides,
   };
 }
@@ -48,7 +50,9 @@ function makeEmptyForm() {
     health_check_path: "/",
     startup_timeout_seconds: "60",
     auto_deploy_enabled: true,
-    run_as_heimdall_child: false,
+    database_required: false,
+    database_type: "postgres",
+    database_env_var: "DATABASE_URL",
     services: defaultServices(),
   };
 }
@@ -75,6 +79,23 @@ function statusTone(status) {
     return "warning";
   }
   return "neutral";
+}
+
+function databaseStatusTone(status) {
+  if (!status) return "neutral";
+  if (["active", "purged"].includes(status)) return "success";
+  if (["failed", "needs_repair", "purge_failed"].includes(status)) return "danger";
+  if (["pending", "purging", "orphaned"].includes(status)) return "warning";
+  return "neutral";
+}
+
+function databaseStatusLabel(status) {
+  return String(status || "unknown").replace(/_/g, " ");
+}
+
+function databaseIsEnabled(database) {
+  if (!database) return false;
+  return !DATABASE_DISABLED_STATUSES.has(database.status);
 }
 
 function projectStatus(project) {
@@ -153,6 +174,18 @@ function parseSecretNames(value) {
     .filter(Boolean);
 }
 
+function managedDatabaseIntent(formState) {
+  return {
+    required: Boolean(formState.database_required),
+    type: "postgres",
+    env_var: String(formState.database_env_var || "DATABASE_URL").trim() || "DATABASE_URL",
+  };
+}
+
+function serviceHasManagedDatabaseSecret(service, envVar) {
+  return parseSecretNames(service.required_secrets_text).includes(envVar);
+}
+
 function looksSecretLike(key, value) {
   const keyPattern = /(^|_)(SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|JWT|DATABASE_URL|DB_PASSWORD|CREDENTIAL)(_|$)/i;
   const valuePattern = /(-----BEGIN|bearer\s+|secret|token|password|passwd|private[_ -]?key|api[_ -]?key|:\/\/[^/\s:@]+:[^@\s]+@)/i;
@@ -179,7 +212,6 @@ function servicePayload(service) {
     build_env: parseKeyValueLines(service.build_env_text),
     runtime_env: parseKeyValueLines(service.runtime_env_text),
     required_secrets: parseSecretNames(service.required_secrets_text),
-    run_as_heimdall_child: Boolean(service.run_as_heimdall_child),
   };
 }
 
@@ -202,7 +234,6 @@ function serviceToForm(service, fallbackPublic = false) {
     build_env_text: envMapToText(service.build_env),
     runtime_env_text: envMapToText(service.runtime_env),
     required_secrets_text: (service.required_secrets || []).join("\n"),
-    run_as_heimdall_child: Boolean(service.run_as_heimdall_child),
   };
 }
 
@@ -223,15 +254,13 @@ function projectToForm(project) {
               public: true,
               health_check_path: apiServices[0]?.health_check_path || project.health_check_path || "/",
               startup_order: apiServices[0]?.startup_order ?? 0,
-              run_as_heimdall_child: Boolean(
-                project.run_as_heimdall_child || apiServices[0]?.run_as_heimdall_child,
-              ),
             },
             true,
           ),
         ];
   const normalizedServices = ensurePreviewEntry(services);
   const previewService = normalizedServices.find((service) => service.public) || normalizedServices[0];
+  const database = project.database || null;
   return {
     ...makeEmptyForm(),
     name: project.name || "",
@@ -246,16 +275,18 @@ function projectToForm(project) {
     preview_port: project.preview_port ? String(project.preview_port) : "",
     health_check_path: previewService.health_check_path || "/",
     auto_deploy_enabled: Boolean(project.auto_deploy_enabled),
-    run_as_heimdall_child: Boolean(project.run_as_heimdall_child),
+    database_required: databaseIsEnabled(database),
+    database_type: database?.type || "postgres",
+    database_env_var: database?.env_var || "DATABASE_URL",
     services: normalizedServices,
   };
 }
 
-function projectPayloadFromForm(formState) {
+function projectPayloadFromForm(formState, existingProject = null) {
   const services = ensurePreviewEntry(formState.services);
   const deployMode = deployModeForServices(services);
   const previewService = services.find((service) => service.public) || services[0];
-  const hasHeimdallChildService = services.some((service) => service.run_as_heimdall_child);
+  const databaseIntent = managedDatabaseIntent(formState);
   const basePayload = {
     name: formState.name,
     provider: formState.provider,
@@ -264,10 +295,14 @@ function projectPayloadFromForm(formState) {
     tracked_branch: formState.tracked_branch,
     deploy_mode: deployMode,
     auto_deploy_enabled: formState.auto_deploy_enabled,
-    run_as_heimdall_child: hasHeimdallChildService,
   };
   if (String(formState.preview_port || "").trim()) {
     basePayload.preview_port = Number(formState.preview_port);
+  }
+  if (databaseIntent.required) {
+    basePayload.database = databaseIntent;
+  } else if (existingProject?.database && !DATABASE_DISABLED_STATUSES.has(existingProject.database.status)) {
+    basePayload.database = databaseIntent;
   }
   if (deployMode === "multi_service_dockerfile") {
     return {
@@ -299,9 +334,18 @@ function buildProjectYaml(formState) {
     "",
     "deploy:",
     `  mode: ${yamlScalar(deployMode, "dockerfile")}`,
-    "",
-    "services:",
   ];
+  if (formState.database_required) {
+    const database = managedDatabaseIntent(formState);
+    lines.push(
+      "",
+      "database:",
+      `  required: ${database.required ? "true" : "false"}`,
+      `  type: ${yamlScalar(database.type, "postgres")}`,
+      `  env_var: ${yamlScalar(database.env_var, "DATABASE_URL")}`,
+    );
+  }
+  lines.push("", "services:");
   services.forEach((service, index) => {
     const buildEnv = parseKeyValueLines(service.build_env_text);
     const runtimeEnv = parseKeyValueLines(service.runtime_env_text);
@@ -423,16 +467,6 @@ function App() {
       services: current.services.map((service, serviceIndex) => ({
         ...service,
         public: serviceIndex === index,
-      })),
-    }));
-  }
-
-  function selectHeimdallChildService(index, checked) {
-    setForm((current) => ({
-      ...current,
-      services: current.services.map((service, serviceIndex) => ({
-        ...service,
-        run_as_heimdall_child: checked && serviceIndex === index,
       })),
     }));
   }
@@ -575,7 +609,7 @@ function App() {
     setError("");
     setActivity(isEditingProject ? "Saving project..." : "Creating project...");
     try {
-      const payload = projectPayloadFromForm(form);
+      const payload = projectPayloadFromForm(form, isEditingProject ? selectedProject : null);
       const saved = isEditingProject
         ? await api.updateProject(editingProjectId, payload)
         : await api.createProject(payload);
@@ -584,6 +618,41 @@ function App() {
       await loadProject(saved.id);
       setActiveTab("Projects");
       setActivity(`${isEditingProject ? "Saved" : "Created"} ${saved.name}.`);
+    } catch (caughtError) {
+      setError(caughtError.message);
+      setActivity("");
+    }
+  }
+
+  async function handleRetryProjectDatabase(project) {
+    if (!project?.id || !project.database?.id) return;
+    setError("");
+    setActivity(`Retrying managed PostgreSQL for ${project.name}...`);
+    try {
+      const saved = await api.retryProjectDatabase(project.id);
+      await refreshProjects(saved.id);
+      await loadProject(saved.id);
+      setActivity(`Managed PostgreSQL status is ${databaseStatusLabel(saved.database?.status)}.`);
+    } catch (caughtError) {
+      setError(caughtError.message);
+      setActivity("");
+    }
+  }
+
+  async function handlePurgeProjectDatabase(project) {
+    if (!project?.id || !project.database?.id) return;
+    const confirmation = window.prompt(`Type "${DATABASE_PURGE_CONFIRMATION}" to purge this managed PostgreSQL resource.`);
+    if (confirmation !== DATABASE_PURGE_CONFIRMATION) return;
+    setError("");
+    setActivity(`Purging managed PostgreSQL for ${project.name}...`);
+    try {
+      const database = await api.purgeProjectDatabase(project.id, {
+        database_id: project.database.id,
+        confirmation,
+      });
+      await refreshProjects(project.id);
+      await loadProject(project.id);
+      setActivity(`Managed PostgreSQL status is ${databaseStatusLabel(database.status)}.`);
     } catch (caughtError) {
       setError(caughtError.message);
       setActivity("");
@@ -698,7 +767,7 @@ function App() {
   async function handleRollback(projectId, releaseId) {
     if (!projectId || !releaseId) return;
     setError("");
-    setActivity("Recording dry-run rollback refusal...");
+    setActivity("Requesting image rollback...");
     try {
       await api.rollbackProject(projectId, { release_id: releaseId });
     } catch (caughtError) {
@@ -970,6 +1039,73 @@ function App() {
                     </div>
                   </div>
 
+                  {selectedProject.database ? (
+                    <div className="database-panel">
+                      <div className="database-panel-header">
+                        <div>
+                          <span className="muted">Managed PostgreSQL</span>
+                          <strong>
+                            <span className={`badge tone-${databaseStatusTone(selectedProject.database.status)}`}>
+                              {databaseStatusLabel(selectedProject.database.status)}
+                            </span>
+                          </strong>
+                        </div>
+                        <div className="button-row">
+                          {DATABASE_RETRYABLE_STATUSES.has(selectedProject.database.status) ? (
+                            <button type="button" onClick={() => handleRetryProjectDatabase(selectedProject)}>
+                              Retry
+                            </button>
+                          ) : null}
+                          {selectedProject.database.status !== "purged" ? (
+                            <button
+                              type="button"
+                              className="danger-button"
+                              onClick={() => handlePurgeProjectDatabase(selectedProject)}
+                            >
+                              Purge
+                            </button>
+                          ) : null}
+                        </div>
+                      </div>
+                      <div className="database-meta-grid">
+                        <div>
+                          <span className="muted">Resource ID</span>
+                          <strong className="mono">{selectedProject.database.id}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Env var</span>
+                          <strong className="mono">{selectedProject.database.env_var}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">App endpoint</span>
+                          <strong className="mono">
+                            {selectedProject.database.app_host}:{selectedProject.database.app_port}
+                          </strong>
+                        </div>
+                        <div>
+                          <span className="muted">Network</span>
+                          <strong className="mono">{selectedProject.database.network_name}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Retention</span>
+                          <strong>{selectedProject.database.retention_policy}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Provisioned</span>
+                          <strong>{formatDate(selectedProject.database.provisioned_at)}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Orphaned</span>
+                          <strong>{formatDate(selectedProject.database.orphaned_at)}</strong>
+                        </div>
+                        <div>
+                          <span className="muted">Last error</span>
+                          <strong>{selectedProject.database.last_error || "-"}</strong>
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
+
                   {selectedProject.services?.length ? (
                     <div className="table-wrap compact service-table">
                       <table>
@@ -977,10 +1113,10 @@ function App() {
                           <tr>
                             <th>Service</th>
                             <th>Preview role</th>
-                            <th>Heimdall child</th>
                             <th>Dockerfile</th>
                             <th>Port</th>
                             <th>Health</th>
+                            {selectedProject.database ? <th>DB env</th> : null}
                           </tr>
                         </thead>
                         <tbody>
@@ -988,18 +1124,26 @@ function App() {
                             <tr key={service.name}>
                               <td className="mono">{service.name}</td>
                               <td>{serviceRoleLabel(service)}</td>
-                              <td>
-                                {service.run_as_heimdall_child ? (
-                                  <span className="badge tone-warning">API child</span>
-                                ) : (
-                                  "-"
-                                )}
-                              </td>
                               <td className="mono truncate-cell" title={service.dockerfile_path}>
                                 {service.dockerfile_path}
                               </td>
                               <td className="mono">{service.container_port}</td>
                               <td className="mono">{service.health_check_path || "/"}</td>
+                              {selectedProject.database ? (
+                                <td>
+                                  <span
+                                    className={`badge tone-${
+                                      service.required_secrets?.includes(selectedProject.database.env_var)
+                                        ? "success"
+                                        : "neutral"
+                                    }`}
+                                  >
+                                    {service.required_secrets?.includes(selectedProject.database.env_var)
+                                      ? `${selectedProject.database.env_var} bound`
+                                      : "not bound"}
+                                  </span>
+                                </td>
+                              ) : null}
                             </tr>
                           ))}
                         </tbody>
@@ -1038,9 +1182,16 @@ function App() {
               <div className="panel-title-row">
                 <div>
                   <h2>Releases / Rollback</h2>
-                  <p className="muted">Rollback is intentionally blocked for simulated images.</p>
+                  <p className="muted">
+                    Image rollback changes preview containers only; managed PostgreSQL data is not restored.
+                  </p>
                 </div>
               </div>
+              {selectedProject?.database && databaseIsEnabled(selectedProject.database) ? (
+                <div className="callout warning">
+                  This project has a managed PostgreSQL binding. Rollback does not restore database data.
+                </div>
+              ) : null}
               <div className="table-wrap compact releases-table">
                 <table>
                   <thead>
@@ -1085,7 +1236,7 @@ function App() {
                             disabled={!selectedProject?.id}
                             onClick={() => handleRollback(selectedProject?.id, release.id)}
                           >
-                            Rollback placeholder
+                            Rollback image
                           </button>
                         </td>
                       </tr>
@@ -1319,14 +1470,6 @@ function App() {
                           />
                           <span>Preview entry</span>
                         </label>
-                        <label className="switch-line">
-                          <input
-                            type="checkbox"
-                            checked={service.run_as_heimdall_child}
-                            onChange={(event) => selectHeimdallChildService(index, event.target.checked)}
-                          />
-                          <span>Heimdall API child</span>
-                        </label>
                         <span className={`badge tone-${service.public ? "success" : "neutral"}`}>
                           {serviceRoleLabel(service)}
                         </span>
@@ -1458,6 +1601,56 @@ function App() {
                     max="600"
                   />
                 </label>
+              </div>
+              <div className="database-form-block">
+                <label className="switch-line">
+                  <input
+                    type="checkbox"
+                    checked={form.database_required}
+                    onChange={(event) => updateForm("database_required", event.target.checked)}
+                  />
+                  <span>Managed PostgreSQL</span>
+                </label>
+                {form.database_required ? (
+                  <>
+                    <div className="split-fields">
+                      <label>
+                        <span>Type</span>
+                        <select
+                          value={form.database_type}
+                          onChange={(event) => updateForm("database_type", event.target.value)}
+                          disabled
+                        >
+                          <option value="postgres">Postgres</option>
+                        </select>
+                      </label>
+                      <label>
+                        <span>Env var</span>
+                        <input
+                          value={form.database_env_var}
+                          onChange={(event) => updateForm("database_env_var", event.target.value)}
+                          pattern="[A-Z_][A-Z0-9_]*"
+                          maxLength="63"
+                        />
+                      </label>
+                    </div>
+                    {form.services.length > 1 ? (
+                      <div className="database-binding-list">
+                        {form.services.map((service) => {
+                          const isBound = serviceHasManagedDatabaseSecret(service, managedDatabaseIntent(form).env_var);
+                          return (
+                            <span
+                              key={service.form_key || service.name}
+                              className={`badge tone-${isBound ? "success" : "neutral"}`}
+                            >
+                              {service.name || "service"}: {isBound ? "DB env bound" : "not bound"}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
             </fieldset>
 

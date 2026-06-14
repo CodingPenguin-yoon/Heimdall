@@ -1,6 +1,6 @@
 from fastapi import APIRouter, Response, status
 
-from ..schemas import ProjectCreate, ProjectRead, ProjectUpdate
+from ..schemas import ProjectCreate, ProjectDatabasePurgeRequest, ProjectDatabaseRead, ProjectRead, ProjectUpdate
 from ..services import projects
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -24,6 +24,16 @@ def get_project(project_id: str) -> ProjectRead:
 @router.patch("/{project_id}", response_model=ProjectRead)
 def update_project(project_id: str, payload: ProjectUpdate) -> ProjectRead:
     return projects.update_project(project_id, payload)
+
+
+@router.post("/{project_id}/database/retry", response_model=ProjectRead)
+def retry_project_database(project_id: str) -> ProjectRead:
+    return projects.retry_project_database(project_id)
+
+
+@router.post("/{project_id}/database/purge", response_model=ProjectDatabaseRead)
+def purge_project_database(project_id: str, payload: ProjectDatabasePurgeRequest) -> ProjectDatabaseRead:
+    return projects.purge_project_database(project_id, payload)
 
 
 @router.delete("/{project_id}", status_code=status.HTTP_204_NO_CONTENT)

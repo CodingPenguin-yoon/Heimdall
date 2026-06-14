@@ -8,17 +8,8 @@ from pathlib import Path
 
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_TRUE_ENV_VALUES = {"1", "true", "yes", "on"}
-_FALSE_ENV_VALUES = {"0", "false", "no", "off", ""}
-
-
-@dataclass(frozen=True)
-class ChildRunnerPaths:
-    child_id: str
-    host_runtime: Path
-    host_project_volumes: Path
-    container_runtime: Path
-    container_project_volumes: Path
+SQLITE_DATABASE_PREFIX = "sqlite:///"
+POSTGRES_DATABASE_PREFIXES = ("postgresql://", "postgres://")
 
 
 def _repo_root() -> Path:
@@ -71,35 +62,6 @@ def _env_first(*names: str) -> str | None:
     return None
 
 
-def _is_relative_to(path: Path, parent: Path) -> bool:
-    try:
-        path.relative_to(parent)
-    except ValueError:
-        return False
-    return True
-
-
-def _env_bool(name: str, *, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    normalized = value.strip().lower()
-    if normalized in _TRUE_ENV_VALUES:
-        return True
-    if normalized in _FALSE_ENV_VALUES:
-        return False
-    raise ValueError(f"{name} must be a boolean value.")
-
-
-def _safe_child_path(root: Path, child_id: str, leaf: str, env_name: str) -> Path:
-    root_resolved = root.resolve(strict=True)
-    raw_path = root / child_id / leaf
-    candidate = raw_path.resolve(strict=False)
-    if not _is_relative_to(candidate, root_resolved):
-        raise ValueError(f"Generated child path for {env_name} must remain under {env_name}.")
-    return raw_path
-
-
 @dataclass(frozen=True)
 class Settings:
     runtime_dir: Path
@@ -113,18 +75,35 @@ class Settings:
     gitlab_base_url: str | None
     gitlab_api_token: str | None
     gitlab_webhook_secret: str | None
+    project_database_admin_url: str | None = None
+    project_database_app_host: str = "project-postgres"
+    project_database_app_port: int = 5432
+    project_database_network: str = "heimdall-project-db"
     volume_root_host: Path | None = None
     volume_root_container: Path | None = None
-    child_runner_enabled: bool = False
-    child_root_host: Path | None = None
-    child_root_container: Path | None = None
+    preview_health_host: str | None = None
+
+    @property
+    def database_backend(self) -> str:
+        if self.database_url.startswith(SQLITE_DATABASE_PREFIX):
+            return "sqlite"
+        if self.database_url.startswith(POSTGRES_DATABASE_PREFIXES):
+            return "postgresql"
+        raise ValueError("HEIMDALL_DATABASE_URL must use sqlite:///, postgresql://, or postgres://")
+
+    @property
+    def is_sqlite_database(self) -> bool:
+        return self.database_backend == "sqlite"
+
+    @property
+    def is_postgres_database(self) -> bool:
+        return self.database_backend == "postgresql"
 
     @property
     def database_path(self) -> Path:
-        prefix = "sqlite:///"
-        if not self.database_url.startswith(prefix):
-            raise ValueError("HEIMDALL_DATABASE_URL must use sqlite:///")
-        raw_path = self.database_url[len(prefix) :]
+        if not self.is_sqlite_database:
+            raise ValueError("database_path is available only for sqlite:/// database URLs")
+        raw_path = self.database_url[len(SQLITE_DATABASE_PREFIX) :]
         if raw_path.startswith("/"):
             return Path(raw_path)
         return (Path.cwd() / raw_path).resolve()
@@ -141,10 +120,15 @@ class Settings:
     def state_dir(self) -> Path:
         return self.runtime_dir / "state"
 
+    @property
+    def secrets_dir(self) -> Path:
+        return self.runtime_dir / "secrets"
+
     def ensure_runtime_dirs(self) -> None:
         for path in (self.runtime_dir, self.logs_dir, self.workspaces_dir, self.state_dir):
             path.mkdir(parents=True, exist_ok=True)
-        self.database_path.parent.mkdir(parents=True, exist_ok=True)
+        if self.is_sqlite_database:
+            self.database_path.parent.mkdir(parents=True, exist_ok=True)
 
     def require_volume_roots(self) -> tuple[Path, Path]:
         if self.volume_root_host is None or self.volume_root_container is None:
@@ -167,62 +151,37 @@ class Settings:
 
         return self.volume_root_host, self.volume_root_container
 
-    def require_child_runner(self) -> tuple[Path, Path]:
-        if not self.child_runner_enabled:
-            raise ValueError("HEIMDALL_CHILD_RUNNER_ENABLED must be true when child runner mode is requested.")
-        if self.child_root_host is None or self.child_root_container is None:
-            raise ValueError(
-                "HEIMDALL_CHILD_ROOT_HOST and HEIMDALL_CHILD_ROOT_CONTAINER are required when child runner mode is requested."
-            )
-
-        for env_name, path in (
-            ("HEIMDALL_CHILD_ROOT_HOST", self.child_root_host),
-            ("HEIMDALL_CHILD_ROOT_CONTAINER", self.child_root_container),
-        ):
-            if not path.is_absolute():
-                raise ValueError(f"{env_name} must be an absolute path.")
-            if path.is_symlink():
-                raise ValueError(f"{env_name} must not be a symlink.")
-            if not path.exists():
-                raise ValueError(f"{env_name} must exist.")
-            if not path.is_dir():
-                raise ValueError(f"{env_name} must be a directory.")
-
-        return self.child_root_host, self.child_root_container
-
-    def child_runner_paths(self, project_id: str) -> ChildRunnerPaths:
-        child_id = str(project_id).strip()
-        if not child_id:
-            raise ValueError("project_id is required for child runner paths.")
-
-        host_root, container_root = self.require_child_runner()
-        return ChildRunnerPaths(
-            child_id=child_id,
-            host_runtime=_safe_child_path(host_root, child_id, "runtime", "HEIMDALL_CHILD_ROOT_HOST"),
-            host_project_volumes=_safe_child_path(
-                host_root,
-                child_id,
-                "project-volumes",
-                "HEIMDALL_CHILD_ROOT_HOST",
-            ),
-            container_runtime=_safe_child_path(
-                container_root,
-                child_id,
-                "runtime",
-                "HEIMDALL_CHILD_ROOT_CONTAINER",
-            ),
-            container_project_volumes=_safe_child_path(
-                container_root,
-                child_id,
-                "project-volumes",
-                "HEIMDALL_CHILD_ROOT_CONTAINER",
-            ),
-        )
+    def require_project_database_settings(self) -> tuple[str, str, int, str]:
+        admin_url = (self.project_database_admin_url or "").strip()
+        app_host = self.project_database_app_host.strip()
+        network = self.project_database_network.strip()
+        missing = []
+        if not admin_url:
+            missing.append("HEIMDALL_PROJECT_DATABASE_ADMIN_URL")
+        if not app_host:
+            missing.append("HEIMDALL_PROJECT_DATABASE_APP_HOST")
+        if not network:
+            missing.append("HEIMDALL_PROJECT_DATABASE_NETWORK")
+        if missing:
+            joined = ", ".join(missing)
+            raise ValueError(f"{joined} must be configured when managed project databases are enabled.")
+        if not admin_url.startswith(POSTGRES_DATABASE_PREFIXES):
+            raise ValueError("HEIMDALL_PROJECT_DATABASE_ADMIN_URL must use postgresql:// or postgres://")
+        if self.project_database_app_port < 1 or self.project_database_app_port > 65535:
+            raise ValueError("HEIMDALL_PROJECT_DATABASE_APP_PORT must be between 1 and 65535.")
+        if network == "heimdall-control":
+            raise ValueError("HEIMDALL_PROJECT_DATABASE_NETWORK cannot use reserved Docker network 'heimdall-control'.")
+        return admin_url, app_host, self.project_database_app_port, network
 
 
 def _env_path(name: str) -> Path | None:
     value = os.getenv(name)
     return Path(value) if value else None
+
+
+def _env_optional(name: str) -> str | None:
+    value = os.getenv(name)
+    return value if value else None
 
 
 @lru_cache
@@ -257,11 +216,13 @@ def get_settings() -> Settings:
             "GITLAB_WEBHOOK_SECRET",
             "GITLAB_SYSTEM_HOOK_SECRET",
         ),
+        project_database_admin_url=_env_optional("HEIMDALL_PROJECT_DATABASE_ADMIN_URL"),
+        project_database_app_host=os.getenv("HEIMDALL_PROJECT_DATABASE_APP_HOST", "project-postgres"),
+        project_database_app_port=int(os.getenv("HEIMDALL_PROJECT_DATABASE_APP_PORT", "5432") or "5432"),
+        project_database_network=os.getenv("HEIMDALL_PROJECT_DATABASE_NETWORK", "heimdall-project-db"),
         volume_root_host=_env_path("HEIMDALL_VOLUME_ROOT_HOST"),
         volume_root_container=_env_path("HEIMDALL_VOLUME_ROOT_CONTAINER"),
-        child_runner_enabled=_env_bool("HEIMDALL_CHILD_RUNNER_ENABLED", default=False),
-        child_root_host=_env_path("HEIMDALL_CHILD_ROOT_HOST"),
-        child_root_container=_env_path("HEIMDALL_CHILD_ROOT_CONTAINER"),
+        preview_health_host=_env_optional("HEIMDALL_PREVIEW_HEALTH_HOST"),
     )
     settings.ensure_runtime_dirs()
     return settings

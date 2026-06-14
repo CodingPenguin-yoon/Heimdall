@@ -113,7 +113,8 @@ Out of scope for the first multi-service slice:
 - multiple public host ports per project
 - production traffic routing
 - service-by-service independent rollback
-- database provisioning
+- managed project PostgreSQL provisioning and `DATABASE_URL` injection; see
+  [Managed Project PostgreSQL](../architecture/managed-project-postgresql.md)
 - generated config commits back to the repository
 - storing raw secret values in DB, logs, UI, or YAML
 
@@ -202,6 +203,12 @@ Each service container joins that network with a stable alias:
 frontend -> http://frontend:{frontend_container_port}
 backend  -> http://backend:{backend_container_port}
 ```
+
+When managed project PostgreSQL is enabled, DB-backed services also join the
+shared project DB network, for example `heimdall-project-db`. They must not
+join `heimdall-control`. The shared project PostgreSQL service is reached by
+its data-plane alias, such as `project-postgres`, and should not publish host
+port `5432` by default.
 
 Example Docker run shape:
 
@@ -328,6 +335,11 @@ provider token value
 SSH key
 raw .env value
 ```
+
+For managed project PostgreSQL, `DATABASE_URL` is assembled only at deploy time
+from managed database metadata plus a first-class password secret. It must not
+be stored in `runtime_env`, repo YAML, release manifests, logs, UI, or normal
+API responses.
 
 The first secret implementation can use runtime environment naming conventions:
 
@@ -529,7 +541,6 @@ startup_order
 build_env_json
 runtime_env_json
 required_secrets_json
-run_as_heimdall_child
 created_at
 updated_at
 ```

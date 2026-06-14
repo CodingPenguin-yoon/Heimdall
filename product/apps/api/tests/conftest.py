@@ -32,9 +32,10 @@ def client(tmp_path, monkeypatch) -> Generator[TestClient, None, None]:
         "GITLAB_SYSTEM_HOOK_SECRET",
         "HEIMDALL_VOLUME_ROOT_HOST",
         "HEIMDALL_VOLUME_ROOT_CONTAINER",
-        "HEIMDALL_CHILD_RUNNER_ENABLED",
-        "HEIMDALL_CHILD_ROOT_HOST",
-        "HEIMDALL_CHILD_ROOT_CONTAINER",
+        "HEIMDALL_PROJECT_DATABASE_ADMIN_URL",
+        "HEIMDALL_PROJECT_DATABASE_APP_HOST",
+        "HEIMDALL_PROJECT_DATABASE_APP_PORT",
+        "HEIMDALL_PROJECT_DATABASE_NETWORK",
     ):
         monkeypatch.setenv(key, "")
 

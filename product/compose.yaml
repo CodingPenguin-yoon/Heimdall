@@ -1,0 +1,99 @@
+name: heimdall
+
+services:
+  heimdall-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${HEIMDALL_CONTROL_POSTGRES_DB:-heimdall}
+      POSTGRES_USER: ${HEIMDALL_CONTROL_POSTGRES_USER:-heimdall}
+      POSTGRES_PASSWORD: ${HEIMDALL_CONTROL_POSTGRES_PASSWORD:?Set HEIMDALL_CONTROL_POSTGRES_PASSWORD in product/.env}
+    volumes:
+      - ${HEIMDALL_CONTROL_POSTGRES_DATA_DIR:-/srv/heimdall/control-postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - heimdall-control
+
+  project-postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${HEIMDALL_PROJECT_POSTGRES_DB:-postgres}
+      POSTGRES_USER: ${HEIMDALL_PROJECT_POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${HEIMDALL_PROJECT_POSTGRES_PASSWORD:?Set HEIMDALL_PROJECT_POSTGRES_PASSWORD in product/.env}
+    volumes:
+      - ${HEIMDALL_PROJECT_POSTGRES_DATA_DIR:-/srv/heimdall/project-postgres}:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      heimdall-control:
+      heimdall-project-db:
+        aliases:
+          - project-postgres
+
+  api:
+    build:
+      context: ./apps/api
+    image: ${HEIMDALL_API_IMAGE:-heimdall-api:local}
+    restart: unless-stopped
+    depends_on:
+      heimdall-postgres:
+        condition: service_healthy
+    environment:
+      HEIMDALL_RUNTIME_DIR: /var/lib/heimdall
+      HEIMDALL_DATABASE_URL: ${HEIMDALL_DATABASE_URL:?Set HEIMDALL_DATABASE_URL in product/.env}
+      HEIMDALL_PROJECT_DATABASE_ADMIN_URL: ${HEIMDALL_PROJECT_DATABASE_ADMIN_URL:-}
+      HEIMDALL_PROJECT_DATABASE_APP_HOST: ${HEIMDALL_PROJECT_DATABASE_APP_HOST:-project-postgres}
+      HEIMDALL_PROJECT_DATABASE_APP_PORT: ${HEIMDALL_PROJECT_DATABASE_APP_PORT:-5432}
+      HEIMDALL_PROJECT_DATABASE_NETWORK: ${HEIMDALL_PROJECT_DATABASE_NETWORK:-heimdall-project-db}
+      HEIMDALL_PUBLIC_BASE_URL: ${HEIMDALL_PUBLIC_BASE_URL:?Set HEIMDALL_PUBLIC_BASE_URL in product/.env}
+      HEIMDALL_PREVIEW_HOST: ${HEIMDALL_PREVIEW_HOST:?Set HEIMDALL_PREVIEW_HOST in product/.env}
+      HEIMDALL_PREVIEW_HEALTH_HOST: ${HEIMDALL_PREVIEW_HEALTH_HOST:-}
+      HEIMDALL_PREVIEW_PORT_START: ${HEIMDALL_PREVIEW_PORT_START:-18000}
+      HEIMDALL_PREVIEW_PORT_END: ${HEIMDALL_PREVIEW_PORT_END:-18999}
+      HEIMDALL_GITHUB_API_TOKEN: ${HEIMDALL_GITHUB_API_TOKEN:-}
+      HEIMDALL_GITHUB_WEBHOOK_SECRET: ${HEIMDALL_GITHUB_WEBHOOK_SECRET:-}
+      HEIMDALL_GITLAB_BASE_URL: ${HEIMDALL_GITLAB_BASE_URL:-}
+      HEIMDALL_GITLAB_API_TOKEN: ${HEIMDALL_GITLAB_API_TOKEN:-}
+      HEIMDALL_GITLAB_WEBHOOK_SECRET: ${HEIMDALL_GITLAB_WEBHOOK_SECRET:-}
+    ports:
+      - ${HEIMDALL_API_PORT:-8000}:8000
+    volumes:
+      - ${HEIMDALL_RUNTIME_DIR_HOST:-/srv/heimdall/runtime}:/var/lib/heimdall
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - heimdall-control
+
+  web:
+    build:
+      context: ./apps/web
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:?Set VITE_API_BASE_URL in product/.env}
+    image: ${HEIMDALL_WEB_IMAGE:-heimdall-web:local}
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - ${HEIMDALL_WEB_PORT:-8080}:80
+    networks:
+      - heimdall-control
+
+networks:
+  heimdall-control:
+    name: heimdall-control
+  heimdall-project-db:
+    name: ${HEIMDALL_PROJECT_DATABASE_NETWORK:-heimdall-project-db}

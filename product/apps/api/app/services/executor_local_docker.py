@@ -8,7 +8,7 @@ import subprocess
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 from urllib.parse import urlparse, urlunparse
@@ -20,6 +20,7 @@ from ..models import DeployMode, Provider
 
 
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
+UTC = timezone.utc
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,7 @@ class ExecutorDeploymentRequest:
     requested_commit_sha: str | None = None
     resolved_commit_sha: str | None = None
     image_tag: str | None = None
+    extra_redactions: tuple[str, ...] = field(default_factory=tuple)
 
 
 @dataclass(frozen=True)
@@ -161,22 +163,9 @@ def redaction_values_for_settings(settings: Settings) -> list[str]:
         values.extend([settings.gitlab_api_token, header, encoded])
     if settings.gitlab_webhook_secret:
         values.append(settings.gitlab_webhook_secret)
+    if settings.project_database_admin_url:
+        values.append(settings.project_database_admin_url)
     return _unique(values)
-
-
-def _child_provider_env(settings: Settings) -> list[str]:
-    env: list[str] = []
-    if settings.github_api_token:
-        env.append(f"HEIMDALL_GITHUB_API_TOKEN={settings.github_api_token}")
-    if settings.github_webhook_secret:
-        env.append(f"HEIMDALL_GITHUB_WEBHOOK_SECRET={settings.github_webhook_secret}")
-    if settings.gitlab_base_url:
-        env.append(f"HEIMDALL_GITLAB_BASE_URL={settings.gitlab_base_url}")
-    if settings.gitlab_api_token:
-        env.append(f"HEIMDALL_GITLAB_API_TOKEN={settings.gitlab_api_token}")
-    if settings.gitlab_webhook_secret:
-        env.append(f"HEIMDALL_GITLAB_WEBHOOK_SECRET={settings.gitlab_webhook_secret}")
-    return env
 
 
 def redact_text(value: str, redactions: Sequence[str]) -> str:
@@ -196,18 +185,6 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
     except ValueError:
         return False
     return True
-
-
-def _as_bool(value: object) -> bool:
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return False
-    if isinstance(value, int):
-        return bool(value)
-    if isinstance(value, str):
-        return value.strip().lower() in {"1", "true", "yes", "on"}
-    return bool(value)
 
 
 def _http_config_base(repo_url: str) -> str | None:
@@ -252,28 +229,6 @@ def _is_multi_service_project(project: dict[str, object]) -> bool:
     return str(project.get("deploy_mode") or "") == DeployMode.MULTI_SERVICE_DOCKERFILE.value
 
 
-def _is_child_service(service: dict[str, object]) -> bool:
-    return _as_bool(service.get("run_as_heimdall_child"))
-
-
-def _child_services(project: dict[str, object]) -> list[dict[str, object]]:
-    return [service for service in _project_services(project) if _is_child_service(service)]
-
-
-def _is_child_project(project: dict[str, object]) -> bool:
-    return _as_bool(project.get("run_as_heimdall_child")) or bool(_child_services(project))
-
-
-def _multi_service_child_state_error(project: dict[str, object]) -> str | None:
-    if not _is_multi_service_project(project):
-        return None
-    child_count = len(_child_services(project))
-    if _as_bool(project.get("run_as_heimdall_child")) or child_count > 0:
-        if child_count != 1:
-            return "Deployment failed: multi-service child mode requires exactly one service marked run_as_heimdall_child."
-    return None
-
-
 def _service_sort_key(service: dict[str, object]) -> tuple[int, str]:
     return (int(service.get("startup_order") or 0), str(service["name"]))
 
@@ -283,6 +238,27 @@ def _project_services(project: dict[str, object]) -> list[dict[str, object]]:
     if isinstance(services, list):
         return sorted([service for service in services if isinstance(service, dict)], key=_service_sort_key)
     return []
+
+
+def _request_redactions(settings: Settings, request: ExecutorDeploymentRequest) -> list[str]:
+    return _unique([*redaction_values_for_settings(settings), *request.extra_redactions])
+
+
+def _managed_runtime_env(service: dict[str, object]) -> dict[str, str]:
+    managed_env = service.get("managed_runtime_env") or {}
+    if not isinstance(managed_env, dict):
+        return {}
+    return {str(key): str(value) for key, value in managed_env.items()}
+
+
+def _managed_database_network(service: dict[str, object]) -> str | None:
+    network = service.get("managed_database_network")
+    if not network:
+        return None
+    network_name = str(network).strip()
+    if network_name == "heimdall-control":
+        raise ExecutorStepError("Container failed: managed project database network cannot use heimdall-control.")
+    return network_name
 
 
 def _public_service(services: Sequence[dict[str, object]]) -> dict[str, object]:
@@ -323,18 +299,10 @@ class RealLocalDockerExecutor:
         )
 
     def deploy_preview(self, request: ExecutorDeploymentRequest) -> ExecutorDeploymentResult:
-        child_state_error = _multi_service_child_state_error(request.project)
-        if child_state_error:
-            return self._failed_before_docker(request.deployment_id, child_state_error)
-        if _is_child_project(request.project):
-            try:
-                self.settings.require_child_runner()
-            except ValueError as exc:
-                return self._failed_before_docker(request.deployment_id, f"Deployment failed: {exc}")
         if _is_multi_service_project(request.project):
             return self._deploy_multi_service_preview(request)
 
-        redactions = redaction_values_for_settings(self.settings)
+        redactions = _request_redactions(self.settings, request)
         log = SectionedLog(redactions)
         resolved_commit_sha: str | None = None
         image_tag: str | None = None
@@ -389,7 +357,7 @@ class RealLocalDockerExecutor:
             )
 
     def _deploy_multi_service_preview(self, request: ExecutorDeploymentRequest) -> ExecutorDeploymentResult:
-        redactions = redaction_values_for_settings(self.settings)
+        redactions = _request_redactions(self.settings, request)
         log = SectionedLog(redactions)
         resolved_commit_sha: str | None = None
         compatibility_image_tag: str | None = None
@@ -804,9 +772,7 @@ class RealLocalDockerExecutor:
             "--name",
             container_name,
             "--network",
-            network_name,
-            "--network-alias",
-            service_name,
+            f"name={network_name},alias={service_name}",
             "--label",
             "heimdall.managed=true",
             "--label",
@@ -816,14 +782,17 @@ class RealLocalDockerExecutor:
             "--label",
             f"heimdall.service={service_name}",
         ]
+        database_network = _managed_database_network(service)
+        if database_network:
+            docker_run.extend(["--network", database_network])
         runtime_env = service.get("runtime_env") or {}
         if isinstance(runtime_env, dict):
             for key in sorted(runtime_env):
                 docker_run.extend(["--env", f"{key}={runtime_env[key]}"])
+        for key, value in sorted(_managed_runtime_env(service).items()):
+            docker_run.extend(["--env", f"{key}={value}"])
         if bool(service["public"]):
             docker_run.extend(["-p", f"{project['preview_host']}:{project['preview_port']}:{service['container_port']}"])
-        if _is_child_service(service):
-            docker_run.extend(self._child_run_args(project_id))
         docker_run.append(image_tag)
 
         log.add(f"{_now()} starting container {container_name}")
@@ -870,12 +839,20 @@ class RealLocalDockerExecutor:
 
         container_name = f"heimdall-preview-{project['slug']}"
         port_mapping = f"{project['preview_host']}:{project['preview_port']}:{project['container_port']}"
+        services = _project_services(project)
+        service = services[0] if services else {}
+        database_network = _managed_database_network(service)
         docker_run = [
             "docker",
             "run",
             "-d",
             "--name",
             container_name,
+        ]
+        if database_network:
+            docker_run.extend(["--network", database_network])
+        docker_run.extend(
+            [
             "--label",
             f"heimdall.project_id={project_id}",
             "--label",
@@ -884,9 +861,10 @@ class RealLocalDockerExecutor:
             "heimdall.managed=true",
             "-p",
             port_mapping,
-        ]
-        if _is_child_project(project):
-            docker_run.extend(self._child_run_args(project_id))
+            ]
+        )
+        for key, value in sorted(_managed_runtime_env(service).items()):
+            docker_run.extend(["--env", f"{key}={value}"])
         docker_run.append(image_tag)
 
         log.add(f"{_now()} starting container {container_name}")
@@ -898,73 +876,6 @@ class RealLocalDockerExecutor:
             command_label="docker run",
         )
         return preview_unavailable
-
-    def _child_run_args(self, project_id: str) -> list[str]:
-        try:
-            _, container_root = self.settings.require_child_runner()
-            paths = self.settings.child_runner_paths(project_id)
-        except ValueError as exc:
-            raise ExecutorStepError(f"Container failed: {exc}") from exc
-
-        self._ensure_child_directory(paths.container_runtime, container_root, "child runtime")
-        self._ensure_child_directory(paths.container_project_volumes, container_root, "child project volumes")
-
-        docker_args = [
-            "-v",
-            "/var/run/docker.sock:/var/run/docker.sock",
-            "-v",
-            f"{paths.host_runtime}:/var/lib/heimdall",
-            "-v",
-            f"{paths.host_project_volumes}:/host/project-volumes",
-            "--env",
-            "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
-            "--env",
-            "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
-            "--env",
-            f"HEIMDALL_VOLUME_ROOT_HOST={paths.host_project_volumes}",
-            "--env",
-            "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
-        ]
-        for value in _child_provider_env(self.settings):
-            docker_args.extend(["--env", value])
-        return docker_args
-
-    def _ensure_child_directory(self, path: Path, root: Path, label: str) -> None:
-        try:
-            root_resolved = root.resolve(strict=True)
-            candidate = path.resolve(strict=False)
-        except (OSError, RuntimeError) as exc:
-            raise ExecutorStepError(f"Container failed: {label} path could not be resolved.") from exc
-        if not _is_relative_to(candidate, root_resolved):
-            raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.")
-
-        self._reject_symlink_components(path, root, root_resolved, label)
-        path.mkdir(parents=True, exist_ok=True)
-        self._reject_symlink_components(path, root, root_resolved, label)
-
-        try:
-            created = path.resolve(strict=True)
-        except (OSError, RuntimeError) as exc:
-            raise ExecutorStepError(f"Container failed: {label} path could not be checked after creation.") from exc
-        if not _is_relative_to(created, root_resolved):
-            raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.")
-        if path.is_symlink() or not path.is_dir():
-            raise ExecutorStepError(f"Container failed: {label} path must be a directory and not a symlink.")
-
-    def _reject_symlink_components(self, path: Path, root: Path, root_resolved: Path, label: str) -> None:
-        current = root
-        try:
-            relative_parts = path.relative_to(root).parts
-        except ValueError:
-            try:
-                relative_parts = path.resolve(strict=False).relative_to(root_resolved).parts
-            except ValueError as exc:
-                raise ExecutorStepError(f"Container failed: {label} path escapes the configured child root.") from exc
-            current = root_resolved
-        for part in relative_parts:
-            current = current / part
-            if current.exists() and current.is_symlink():
-                raise ExecutorStepError(f"Container failed: {label} path must not contain symlinks.")
 
     def _managed_container_ids(
         self,
@@ -1042,7 +953,8 @@ class RealLocalDockerExecutor:
         path = str(service.get("health_check_path") or "/")
         if not path.startswith("/"):
             path = f"/{path}"
-        url = f"http://{project['preview_host']}:{project['preview_port']}{path}"
+        health_host = self.settings.preview_health_host or str(project["preview_host"])
+        url = f"http://{health_host}:{project['preview_port']}{path}"
         deadline = time.monotonic() + self.health_timeout_seconds
         attempt = 0
         while True:
@@ -1131,7 +1043,8 @@ class RealLocalDockerExecutor:
         path = str(project.get("health_check_path") or "/")
         if not path.startswith("/"):
             path = f"/{path}"
-        return f"http://{project['preview_host']}:{project['preview_port']}{path}"
+        health_host = self.settings.preview_health_host or str(project["preview_host"])
+        return f"http://{health_host}:{project['preview_port']}{path}"
 
     def _run_checked(
         self,

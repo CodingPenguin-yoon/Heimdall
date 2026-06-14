@@ -32,12 +32,16 @@ SERVER_ONLY_ENV_NAMES = {
     "HEIMDALL_CHILD_ROOT_HOST",
     "HEIMDALL_CHILD_RUNNER_ENABLED",
     "HEIMDALL_DATABASE_URL",
+    "HEIMDALL_PROJECT_DATABASE_ADMIN_URL",
+    "HEIMDALL_PROJECT_DATABASE_APP_HOST",
+    "HEIMDALL_PROJECT_DATABASE_APP_PORT",
+    "HEIMDALL_PROJECT_DATABASE_NETWORK",
     "HEIMDALL_REPO_ROOT",
     "HEIMDALL_RUNTIME_DIR",
     "HEIMDALL_VOLUME_ROOT_CONTAINER",
     "HEIMDALL_VOLUME_ROOT_HOST",
 }
-SERVER_ONLY_ENV_NAME_PREFIXES = ("HEIMDALL_CHILD_", "HEIMDALL_VOLUME_ROOT_")
+SERVER_ONLY_ENV_NAME_PREFIXES = ("HEIMDALL_CHILD_", "HEIMDALL_VOLUME_ROOT_", "HEIMDALL_PROJECT_DATABASE_")
 SERVER_ONLY_ENV_VALUE_PATTERN = re.compile(
     r"(docker\.sock|/var/run/docker\.sock|/var/lib/heimdall|/host/children|/host/project-volumes|HEIMDALL_CHILD_|HEIMDALL_VOLUME_ROOT_)",
     re.IGNORECASE,
@@ -255,6 +259,8 @@ def validate_required_secrets(values: list[str]) -> list[str]:
         secret_name = str(raw_value).strip()
         if not SECRET_NAME_PATTERN.fullmatch(secret_name):
             raise bad_request("Required secret names must use uppercase environment variable syntax.")
+        if secret_name in SERVER_ONLY_ENV_NAMES or secret_name.startswith(SERVER_ONLY_ENV_NAME_PREFIXES):
+            raise bad_request(f"Required secret name '{secret_name}' is reserved for Heimdall server configuration.")
         if secret_name in seen:
             raise bad_request(f"Duplicate required secret name '{secret_name}' is not allowed.")
         seen.add(secret_name)

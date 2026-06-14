@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -11,6 +12,8 @@ from app.services.executor_local_docker import (
     CommandResult,
     ExecutorDeploymentRequest,
     RealLocalDockerExecutor,
+    redact_text,
+    redaction_values_for_settings,
 )
 
 
@@ -107,9 +110,7 @@ def make_settings(
     gitlab_base_url: str | None = None,
     gitlab_token: str | None = None,
     gitlab_webhook_secret: str | None = None,
-    child_runner_enabled: bool = False,
-    child_root_host: Path | None = None,
-    child_root_container: Path | None = None,
+    project_database_admin_url: str | None = None,
 ) -> Settings:
     settings = Settings(
         runtime_dir=tmp_path / "runtime",
@@ -123,12 +124,20 @@ def make_settings(
         gitlab_base_url=gitlab_base_url,
         gitlab_api_token=gitlab_token,
         gitlab_webhook_secret=gitlab_webhook_secret,
-        child_runner_enabled=child_runner_enabled,
-        child_root_host=child_root_host,
-        child_root_container=child_root_container,
+        project_database_admin_url=project_database_admin_url,
     )
     settings.ensure_runtime_dirs()
     return settings
+
+
+def test_project_database_admin_url_is_redacted(tmp_path):
+    admin_url = "postgres://admin:secret@project-postgres:5432/postgres"
+    settings = make_settings(tmp_path, project_database_admin_url=admin_url)
+
+    redactions = redaction_values_for_settings(settings)
+
+    assert admin_url in redactions
+    assert redact_text(f"connecting to {admin_url}", redactions) == "connecting to [redacted]"
 
 
 def make_project(**overrides) -> dict[str, object]:
@@ -234,8 +243,39 @@ def env_values(argv: list[str]) -> list[str]:
     return [value for index, value in enumerate(argv) if index > 0 and argv[index - 1] == "--env"]
 
 
+def network_values(argv: list[str]) -> list[str]:
+    return [value for index, value in enumerate(argv) if index > 0 and argv[index - 1] == "--network"]
+
+
+def assert_no_child_runtime_or_secret_env(argv: list[str]) -> None:
+    command = " ".join(argv)
+    forbidden_fragments = [
+        "/var/run/docker.sock",
+        "/var/lib/heimdall",
+        "/host/project-volumes",
+        "HEIMDALL_RUNTIME_DIR=",
+        "HEIMDALL_DATABASE_URL=",
+        "HEIMDALL_VOLUME_ROOT_HOST=",
+        "HEIMDALL_VOLUME_ROOT_CONTAINER=",
+        "HEIMDALL_GITHUB_API_TOKEN=",
+        "HEIMDALL_GITHUB_WEBHOOK_SECRET=",
+        "HEIMDALL_GITLAB_BASE_URL=",
+        "HEIMDALL_GITLAB_API_TOKEN=",
+        "HEIMDALL_GITLAB_WEBHOOK_SECRET=",
+    ]
+    for fragment in forbidden_fragments:
+        assert fragment not in command
+
+
 def test_real_local_docker_executor_success_fetches_builds_replaces_and_reports_metadata(tmp_path):
-    settings = make_settings(tmp_path)
+    settings = make_settings(
+        tmp_path,
+        github_token="github-child-token",
+        github_webhook_secret="github-child-webhook",
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="gitlab-child-token",
+        gitlab_webhook_secret="gitlab-child-webhook",
+    )
     project = make_project()
     prepare_existing_repo(settings, project)
     runner = RecordingRunner()
@@ -304,27 +344,25 @@ def test_real_local_docker_executor_success_fetches_builds_replaces_and_reports_
         "heimdall/preview-api:aaaaaaa",
     ]
     assert "--env-file" not in docker_run
-    assert "/var/run/docker.sock" not in docker_run
+    assert_no_child_runtime_or_secret_env(docker_run)
     assert health.calls == [("http://127.0.0.1:18000/health", 5.0)]
 
 
-def test_child_single_service_executor_adds_only_required_mounts_and_env(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    host_root.mkdir()
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        github_token="github-child-token",
-        github_webhook_secret="github-child-webhook",
-        gitlab_base_url="https://gitlab.example.com",
-        gitlab_token="gitlab-child-token",
-        gitlab_webhook_secret="gitlab-child-webhook",
-        child_runner_enabled=True,
-        child_root_host=host_root,
-        child_root_container=container_root,
+def test_single_service_executor_injects_managed_database_env_and_network_with_redaction(tmp_path):
+    settings = make_settings(tmp_path)
+    password = "db password/with:special"
+    encoded_password = "db%20password%2Fwith%3Aspecial"
+    database_url = f"postgresql://hm_project_role:{encoded_password}@project-postgres:5432/hm_project_db"
+    project = make_project(
+        services=[
+            {
+                "id": "service-app",
+                "name": "app",
+                "managed_runtime_env": {"DATABASE_URL": database_url},
+                "managed_database_network": "heimdall-project-db",
+            }
+        ]
     )
-    project = make_project(run_as_heimdall_child=True)
     prepare_existing_repo(settings, project)
     runner = RecordingRunner()
     executor = RealLocalDockerExecutor(
@@ -336,56 +374,30 @@ def test_child_single_service_executor_adds_only_required_mounts_and_env(tmp_pat
         health_interval_seconds=0,
     )
 
-    result = executor.deploy_preview(make_request(project))
+    result = executor.deploy_preview(
+        replace(make_request(project), extra_redactions=(password, encoded_password, database_url))
+    )
 
     assert result.success is True
-    runtime_dir = container_root / "project-1" / "runtime"
-    project_volumes_dir = container_root / "project-1" / "project-volumes"
-    assert runtime_dir.is_dir()
-    assert project_volumes_dir.is_dir()
-    assert not runtime_dir.is_symlink()
-    assert not project_volumes_dir.is_symlink()
-
     docker_run = find_call(runner.calls, "run")
-    assert "--env-file" not in docker_run
-    assert [docker_run[index + 1] for index, value in enumerate(docker_run) if value == "-v"] == [
-        "/var/run/docker.sock:/var/run/docker.sock",
-        f"{host_root / 'project-1' / 'runtime'}:/var/lib/heimdall",
-        f"{host_root / 'project-1' / 'project-volumes'}:/host/project-volumes",
-    ]
-    assert env_values(docker_run) == [
-        "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
-        "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
-        f"HEIMDALL_VOLUME_ROOT_HOST={host_root / 'project-1' / 'project-volumes'}",
-        "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
-        "HEIMDALL_GITHUB_API_TOKEN=github-child-token",
-        "HEIMDALL_GITHUB_WEBHOOK_SECRET=github-child-webhook",
-        "HEIMDALL_GITLAB_BASE_URL=https://gitlab.example.com",
-        "HEIMDALL_GITLAB_API_TOKEN=gitlab-child-token",
-        "HEIMDALL_GITLAB_WEBHOOK_SECRET=gitlab-child-webhook",
-    ]
-    assert docker_run[-1] == "heimdall/preview-api:aaaaaaa"
+    assert network_values(docker_run) == ["heimdall-project-db"]
+    assert f"DATABASE_URL={database_url}" in env_values(docker_run)
+    assert database_url not in result.log_content
+    assert password not in result.log_content
+    assert encoded_password not in result.log_content
+    assert "[redacted]" in result.log_content
 
 
-def test_child_executor_omits_unset_provider_env(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    host_root.mkdir()
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        github_token="github-child-token",
-        child_runner_enabled=True,
-        child_root_host=host_root,
-        child_root_container=container_root,
-    )
-    project = make_project(run_as_heimdall_child=True)
+def test_single_service_executor_can_use_distinct_preview_health_host(tmp_path):
+    settings = replace(make_settings(tmp_path), preview_health_host="host.docker.internal")
+    project = make_project()
     prepare_existing_repo(settings, project)
     runner = RecordingRunner()
+    health = StaticHealthClient(200)
     executor = RealLocalDockerExecutor(
         settings=settings,
         runner=runner,
-        health_client=StaticHealthClient(200),
+        health_client=health,
         sleep=lambda _: None,
         health_timeout_seconds=0,
         health_interval_seconds=0,
@@ -395,131 +407,19 @@ def test_child_executor_omits_unset_provider_env(tmp_path):
 
     assert result.success is True
     docker_run = find_call(runner.calls, "run")
-    child_env = env_values(docker_run)
-    assert "HEIMDALL_GITHUB_API_TOKEN=github-child-token" in child_env
-    assert not any(value.startswith("HEIMDALL_GITHUB_WEBHOOK_SECRET=") for value in child_env)
-    assert not any(value.startswith("HEIMDALL_GITLAB_BASE_URL=") for value in child_env)
-    assert not any(value.startswith("HEIMDALL_GITLAB_API_TOKEN=") for value in child_env)
-    assert not any(value.startswith("HEIMDALL_GITLAB_WEBHOOK_SECRET=") for value in child_env)
-
-
-def test_child_multi_service_executor_adds_child_args_only_to_marked_service(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    host_root.mkdir()
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        github_token="github-child-token",
-        github_webhook_secret="github-child-webhook",
-        gitlab_base_url="https://gitlab.example.com",
-        gitlab_token="gitlab-child-token",
-        gitlab_webhook_secret="gitlab-child-webhook",
-        child_runner_enabled=True,
-        child_root_host=host_root,
-        child_root_container=container_root,
-    )
-    project = make_multi_service_project(run_as_heimdall_child=True)
-    for service in project["services"]:
-        service["run_as_heimdall_child"] = service["name"] == "backend"
-    prepare_existing_multi_service_repo(settings, project)
-    runner = RecordingRunner()
-    executor = RealLocalDockerExecutor(
-        settings=settings,
-        runner=runner,
-        health_client=StaticHealthClient(200),
-        sleep=lambda _: None,
-        health_timeout_seconds=0,
-        health_interval_seconds=0,
-    )
-
-    result = executor.deploy_preview(make_request(project))
-
-    assert result.success is True
-    runtime_dir = container_root / "project-1" / "runtime"
-    project_volumes_dir = container_root / "project-1" / "project-volumes"
-    assert runtime_dir.is_dir()
-    assert project_volumes_dir.is_dir()
-
-    container_runs = [call for call in runner.calls if call[:3] == ["docker", "run", "-d"]]
-    assert len(container_runs) == 2
-    backend_run, frontend_run = container_runs
-    assert backend_run[backend_run.index("--name") + 1] == "heimdall-preview-portfolio-backend"
-    assert [backend_run[index + 1] for index, value in enumerate(backend_run) if value == "-v"] == [
-        "/var/run/docker.sock:/var/run/docker.sock",
-        f"{host_root / 'project-1' / 'runtime'}:/var/lib/heimdall",
-        f"{host_root / 'project-1' / 'project-volumes'}:/host/project-volumes",
-    ]
-    provider_env = [
-        "HEIMDALL_GITHUB_API_TOKEN=github-child-token",
-        "HEIMDALL_GITHUB_WEBHOOK_SECRET=github-child-webhook",
-        "HEIMDALL_GITLAB_BASE_URL=https://gitlab.example.com",
-        "HEIMDALL_GITLAB_API_TOKEN=gitlab-child-token",
-        "HEIMDALL_GITLAB_WEBHOOK_SECRET=gitlab-child-webhook",
-    ]
-    assert env_values(backend_run) == [
-        "PORT=8000",
-        "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall",
-        "HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db",
-        f"HEIMDALL_VOLUME_ROOT_HOST={host_root / 'project-1' / 'project-volumes'}",
-        "HEIMDALL_VOLUME_ROOT_CONTAINER=/host/project-volumes",
-        *provider_env,
-    ]
-    assert frontend_run[frontend_run.index("--name") + 1] == "heimdall-preview-portfolio-frontend"
-    assert "/var/run/docker.sock:/var/run/docker.sock" not in frontend_run
-    assert "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall" not in frontend_run
-    for value in provider_env:
-        assert value not in frontend_run
-
-    helper = find_call(runner.calls, "curlimages/curl:8.10.1", "http://backend:8000/health")
-    assert "/var/run/docker.sock:/var/run/docker.sock" not in helper
-    assert "HEIMDALL_RUNTIME_DIR=/var/lib/heimdall" not in helper
-    for value in provider_env:
-        assert value not in helper
-    for docker_run in [*container_runs, helper]:
-        assert "--env-file" not in docker_run
-        assert "--privileged" not in docker_run
-        assert "--volumes-from" not in docker_run
-
-
-def test_child_executor_rejects_symlinked_generated_child_directory(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    outside = tmp_path / "outside-child"
-    host_root.mkdir()
-    container_root.mkdir()
-    outside.mkdir()
-    try:
-        (container_root / "project-1").symlink_to(outside, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable: {exc}")
-    settings = make_settings(
-        tmp_path,
-        child_runner_enabled=True,
-        child_root_host=host_root,
-        child_root_container=container_root,
-    )
-    project = make_project(run_as_heimdall_child=True)
-    prepare_existing_repo(settings, project)
-    runner = RecordingRunner()
-    executor = RealLocalDockerExecutor(
-        settings=settings,
-        runner=runner,
-        health_client=StaticHealthClient(200),
-        sleep=lambda _: None,
-        health_timeout_seconds=0,
-        health_interval_seconds=0,
-    )
-
-    result = executor.deploy_preview(make_request(project))
-
-    assert result.success is False
-    assert "symlink" in result.status_message or "remain under" in result.status_message
-    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
+    assert docker_run[docker_run.index("-p") + 1] == "127.0.0.1:18000:8080"
+    assert health.calls == [("http://host.docker.internal:18000/health", 5.0)]
 
 
 def test_multi_service_executor_fetches_once_builds_networks_labels_and_checks_internal_health(tmp_path):
-    settings = make_settings(tmp_path)
+    settings = make_settings(
+        tmp_path,
+        github_token="github-child-token",
+        github_webhook_secret="github-child-webhook",
+        gitlab_base_url="https://gitlab.example.com",
+        gitlab_token="gitlab-child-token",
+        gitlab_webhook_secret="gitlab-child-webhook",
+    )
     project = make_multi_service_project()
     prepare_existing_multi_service_repo(settings, project)
     runner = RecordingRunner(existing_containers={"backend": "old-backend\n", "frontend": ""})
@@ -573,23 +473,122 @@ def test_multi_service_executor_fetches_once_builds_networks_labels_and_checks_i
     assert len(container_runs) == 2
     backend_run, frontend_run = container_runs
     assert backend_run[backend_run.index("--name") + 1] == "heimdall-preview-portfolio-backend"
-    assert backend_run[backend_run.index("--network-alias") + 1] == "backend"
+    assert network_values(backend_run) == ["name=heimdall-preview-portfolio,alias=backend"]
     assert "heimdall.service=backend" in backend_run
     assert "PORT=8000" in backend_run
     assert "-p" not in backend_run
     assert frontend_run[frontend_run.index("--name") + 1] == "heimdall-preview-portfolio-frontend"
-    assert frontend_run[frontend_run.index("--network-alias") + 1] == "frontend"
+    assert network_values(frontend_run) == ["name=heimdall-preview-portfolio,alias=frontend"]
     assert "heimdall.service=frontend" in frontend_run
     assert "BACKEND_INTERNAL_URL=http://backend:8000" in frontend_run
     assert frontend_run[frontend_run.index("-p") + 1] == "127.0.0.1:18000:3000"
 
     helper = find_call(runner.calls, "curlimages/curl:8.10.1", "http://backend:8000/health")
     assert helper[:5] == ["docker", "run", "--rm", "--network", "heimdall-preview-portfolio"]
+    for docker_run in [*container_runs, helper]:
+        assert "--env-file" not in docker_run
+        assert "--privileged" not in docker_run
+        assert "--volumes-from" not in docker_run
+        assert_no_child_runtime_or_secret_env(docker_run)
     assert health.calls == [("http://127.0.0.1:18000/", 5.0)]
     services = {service.name: service for service in result.service_results}
     assert services["backend"].internal_url == "http://backend:8000"
     assert services["backend"].preview_url is None
     assert services["frontend"].preview_url == "http://127.0.0.1:18000"
+
+
+def test_multi_service_executor_can_use_distinct_preview_health_host(tmp_path):
+    settings = replace(make_settings(tmp_path), preview_health_host="host.docker.internal")
+    project = make_multi_service_project()
+    prepare_existing_multi_service_repo(settings, project)
+    runner = RecordingRunner()
+    health = StaticHealthClient(200)
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=health,
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is True
+    frontend_run = [call for call in runner.calls if call[:3] == ["docker", "run", "-d"]][-1]
+    assert frontend_run[frontend_run.index("-p") + 1] == "127.0.0.1:18000:3000"
+    assert health.calls == [("http://host.docker.internal:18000/", 5.0)]
+    services = {service.name: service for service in result.service_results}
+    assert services["backend"].internal_url == "http://backend:8000"
+    assert services["backend"].preview_url is None
+    assert services["frontend"].preview_url == "http://127.0.0.1:18000"
+
+
+def test_multi_service_executor_injects_database_only_for_bound_services(tmp_path):
+    settings = make_settings(tmp_path)
+    password = "backend-db-password"
+    database_url = "postgresql://hm_role:backend-db-password@project-postgres:5432/hm_db"
+    project = make_multi_service_project()
+    project["services"][0]["id"] = "service-backend"
+    project["services"][0]["managed_runtime_env"] = {"DATABASE_URL": database_url}
+    project["services"][0]["managed_database_network"] = "heimdall-project-db"
+    project["services"][1]["id"] = "service-frontend"
+    prepare_existing_multi_service_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+    request = replace(make_request(project), extra_redactions=(password, database_url))
+
+    result = executor.deploy_preview(request)
+
+    assert result.success is True
+    container_runs = [call for call in runner.calls if call[:3] == ["docker", "run", "-d"]]
+    backend_run, frontend_run = container_runs
+    assert network_values(backend_run) == [
+        "name=heimdall-preview-portfolio,alias=backend",
+        "heimdall-project-db",
+    ]
+    assert f"DATABASE_URL={database_url}" in env_values(backend_run)
+    assert network_values(frontend_run) == ["name=heimdall-preview-portfolio,alias=frontend"]
+    assert not any(value.startswith("DATABASE_URL=") for value in env_values(frontend_run))
+    assert database_url not in result.log_content
+    assert password not in result.log_content
+
+
+def test_executor_rejects_managed_database_control_network_before_container_creation(tmp_path):
+    settings = make_settings(tmp_path)
+    project = make_project(
+        services=[
+            {
+                "id": "service-app",
+                "name": "app",
+                "managed_runtime_env": {"DATABASE_URL": "postgresql://role:password@project-postgres:5432/db"},
+                "managed_database_network": "heimdall-control",
+            }
+        ]
+    )
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is False
+    assert "heimdall-control" in result.status_message
+    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
 
 
 def test_multi_service_executor_reuses_existing_matching_project_network(tmp_path):

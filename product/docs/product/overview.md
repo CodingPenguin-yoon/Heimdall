@@ -62,12 +62,15 @@ Avoid:
 
 - admin/root provider tokens
 - broad personal access tokens
-- storing raw tokens in SQLite
-- logging tokens or webhook secrets
+- storing raw tokens, generated database passwords, or raw `DATABASE_URL`
+  values in the control database
+- logging tokens, webhook secrets, database passwords, or raw `DATABASE_URL`
+  values
 
 Prefer:
 
 - repository/project-scoped tokens
-- token references in DB
-- values stored in `.env` or ignored runtime secret storage
+- token and credential references in the control database
+- values stored in `.env`, ignored runtime secret storage, or an equivalent
+  server-side secret provider
 - read-only clone access plus webhook management permission

@@ -1,5 +1,10 @@
 # Nested Heimdall Child Deploy Implementation Plan
 
+> Deprecated legacy path. Nested/child Heimdall is historical context, not the
+> supported self-hosting model. Current database direction is documented in
+> [Managed Project PostgreSQL](../architecture/managed-project-postgresql.md)
+> and [Single Outer Heimdall Direction](single-outer-heimdall-direction.md).
+
 ## Status
 
 Minimum API-only child runner slice implemented.

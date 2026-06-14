@@ -2,15 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import HTTPException, status
 
 from ..config import get_settings
-from ..db import connect, resolve_log_path, row_to_dict
+from ..db import DBConnection, DBRow, connect, resolve_log_path, row_to_dict
 from ..models import (
     ACTIVE_DEPLOYMENT_STATUSES,
     DeploymentStatus,
@@ -36,21 +35,22 @@ from .executor_local_docker import (
     redact_text,
     redaction_values_for_settings,
 )
-from .projects import require_child_runner_for_project, utc_now
+from .managed_database_runtime import apply_managed_database_runtime
+from .projects import utc_now
 
 
 def _as_bool(value: object) -> bool:
     return bool(int(value)) if value is not None else False
 
 
-def _serialize_deployment(row: sqlite3.Row) -> DeploymentRead:
+def _serialize_deployment(row: DBRow) -> DeploymentRead:
     data = row_to_dict(row)
     assert data is not None
     normalized = {**data, "is_dry_run": _as_bool(data["is_dry_run"])}
     return DeploymentRead(**normalized)
 
 
-def _fetch_release_services(connection: sqlite3.Connection, release_id: str) -> list[dict[str, object]]:
+def _fetch_release_services(connection: DBConnection, release_id: str) -> list[dict[str, object]]:
     rows = connection.execute(
         """
         SELECT *
@@ -80,7 +80,7 @@ def _fetch_release_services(connection: sqlite3.Connection, release_id: str) -> 
     return services
 
 
-def _serialize_release(row: sqlite3.Row, connection: sqlite3.Connection) -> ReleaseRead:
+def _serialize_release(row: DBRow, connection: DBConnection) -> ReleaseRead:
     data = row_to_dict(row)
     assert data is not None
     is_current = _as_bool(data["is_current"])
@@ -96,15 +96,17 @@ def _serialize_release(row: sqlite3.Row, connection: sqlite3.Connection) -> Rele
         services=_fetch_release_services(connection, str(data["id"])),
     )
 
+UTC = timezone.utc
 
-def _get_project_row(connection: sqlite3.Connection, project_id: str) -> sqlite3.Row:
+
+def _get_project_row(connection: DBConnection, project_id: str) -> DBRow:
     row = connection.execute("SELECT * FROM projects WHERE id = ?", (project_id,)).fetchone()
     if row is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Project '{project_id}' was not found.")
     return row
 
 
-def _get_deployment_row(connection: sqlite3.Connection, deployment_id: str) -> sqlite3.Row:
+def _get_deployment_row(connection: DBConnection, deployment_id: str) -> DBRow:
     row = connection.execute("SELECT * FROM deployments WHERE id = ?", (deployment_id,)).fetchone()
     if row is None:
         raise HTTPException(
@@ -113,7 +115,7 @@ def _get_deployment_row(connection: sqlite3.Connection, deployment_id: str) -> s
     return row
 
 
-def _get_release_row(connection: sqlite3.Connection, project_id: str, release_id: str) -> sqlite3.Row:
+def _get_release_row(connection: DBConnection, project_id: str, release_id: str) -> DBRow:
     row = connection.execute(
         "SELECT * FROM releases WHERE id = ? AND project_id = ?",
         (release_id, project_id),
@@ -149,6 +151,7 @@ def _json_list(value: str | None) -> list[str]:
 
 def _single_project_service(project: dict[str, object]) -> dict[str, object]:
     return {
+        "id": None,
         "name": "app",
         "build_context_path": str(project["build_context_path"]),
         "dockerfile_path": str(project["dockerfile_path"] or "Dockerfile"),
@@ -159,11 +162,16 @@ def _single_project_service(project: dict[str, object]) -> dict[str, object]:
         "build_env": {},
         "runtime_env": {},
         "required_secrets": [],
-        "run_as_heimdall_child": _as_bool(project["run_as_heimdall_child"]),
     }
 
 
-def _load_project_for_executor(connection: sqlite3.Connection, project_row: sqlite3.Row) -> dict[str, object]:
+def _load_project_for_executor(
+    connection: DBConnection,
+    project_row: DBRow,
+    *,
+    settings=None,
+    include_managed_database: bool = False,
+) -> tuple[dict[str, object], list[str]]:
     project = row_to_dict(project_row)
     assert project is not None
     rows = connection.execute(
@@ -181,6 +189,7 @@ def _load_project_for_executor(connection: sqlite3.Connection, project_row: sqli
         assert data is not None
         services.append(
             {
+                "id": str(data["id"]),
                 "name": str(data["name"]),
                 "build_context_path": str(data["build_context_path"]),
                 "dockerfile_path": str(data["dockerfile_path"]),
@@ -191,23 +200,22 @@ def _load_project_for_executor(connection: sqlite3.Connection, project_row: sqli
                 "build_env": _json_dict(data["build_env_json"]),
                 "runtime_env": _json_dict(data["runtime_env_json"]),
                 "required_secrets": _json_list(data["required_secrets_json"]),
-                "run_as_heimdall_child": _as_bool(data["run_as_heimdall_child"]),
             }
         )
     if not services:
         services = [_single_project_service(project)]
-    if str(project.get("deploy_mode")) == "dockerfile":
-        services = [
-            {
-                **service,
-                "run_as_heimdall_child": _as_bool(project["run_as_heimdall_child"]),
-            }
-            for service in services
-        ]
-    project_child = _as_bool(project["run_as_heimdall_child"]) or any(
-        _as_bool(service.get("run_as_heimdall_child")) for service in services
-    )
-    return {**project, "run_as_heimdall_child": project_child, "services": services}
+    redactions: list[str] = []
+    if include_managed_database:
+        if settings is None:
+            settings = get_settings()
+        redactions = apply_managed_database_runtime(
+            connection,
+            settings=settings,
+            project=project,
+            services=services,
+        )
+    project.pop("run_as_heimdall_child", None)
+    return {**project, "services": services}, redactions
 
 
 def _public_service(project: dict[str, object]) -> dict[str, object]:
@@ -224,7 +232,7 @@ def _compatibility_image_tag(project: dict[str, object], short_commit: str) -> s
     return f"heimdall/{project['slug']}:{short_commit}"
 
 
-def _ensure_no_active_deployment(connection: sqlite3.Connection, project_id: str) -> None:
+def _ensure_no_active_deployment(connection: DBConnection, project_id: str) -> None:
     row = connection.execute(
         """
         SELECT id, status
@@ -257,8 +265,17 @@ def _write_redacted_log_file(log_path: Path, content: str, settings) -> None:
     _write_log_file(log_path, redact_text(content, redaction_values_for_settings(settings)))
 
 
+def _write_redacted_log_file_with_values(
+    log_path: Path,
+    content: str,
+    settings,
+    redactions: list[str],
+) -> None:
+    _write_log_file(log_path, redact_text(content, [*redaction_values_for_settings(settings), *redactions]))
+
+
 def _create_deployment_row(
-    connection: sqlite3.Connection,
+    connection: DBConnection,
     *,
     deployment_id: str,
     project_id: str,
@@ -357,7 +374,7 @@ def _fallback_service_results(
 
 
 def _insert_release_services(
-    connection: sqlite3.Connection,
+    connection: DBConnection,
     *,
     release_id: str,
     service_results: tuple[ExecutorServiceResult, ...],
@@ -399,7 +416,7 @@ def _create_dry_run_deployment(project_id: str, payload: DeploymentRequest) -> D
     settings = get_settings()
     with connect(settings) as connection:
         project_row = _get_project_row(connection, project_id)
-        project = _load_project_for_executor(connection, project_row)
+        project, _ = _load_project_for_executor(connection, project_row)
         _ensure_no_active_deployment(connection, project_id)
 
         deployment_id = f"deploy_{uuid.uuid4().hex[:12]}"
@@ -543,9 +560,13 @@ def _create_real_deployment(project_id: str, payload: DeploymentRequest) -> Depl
 
     with connect(settings) as connection:
         project_row = _get_project_row(connection, project_id)
-        project = _load_project_for_executor(connection, project_row)
+        project, managed_database_redactions = _load_project_for_executor(
+            connection,
+            project_row,
+            settings=settings,
+            include_managed_database=True,
+        )
         _ensure_no_active_deployment(connection, project_id)
-        require_child_runner_for_project(settings, project)
 
         previous_release_id = project["current_release_id"]
         previous_project_status = str(project["status"])
@@ -585,6 +606,7 @@ def _create_real_deployment(project_id: str, payload: DeploymentRequest) -> Depl
                 release_id=release_id,
                 requested_ref=requested_ref,
                 requested_commit_sha=payload.commit_sha,
+                extra_redactions=tuple(managed_database_redactions),
             )
         )
     except Exception as exc:  # pragma: no cover - defensive executor boundary.
@@ -592,12 +614,18 @@ def _create_real_deployment(project_id: str, payload: DeploymentRequest) -> Depl
 
     success = executor_result.success and bool(executor_result.resolved_commit_sha and executor_result.image_tag)
     log_content = executor_result.log_content
-    status_message = redact_text(executor_result.status_message, redaction_values_for_settings(settings))
+    all_redactions = [*redaction_values_for_settings(settings), *managed_database_redactions]
+    status_message = redact_text(executor_result.status_message, all_redactions)
     if executor_result.success and not success:
         status_message = "Deployment failed: executor did not return release metadata."
         log_content = "\n".join([log_content, "", "[summary]", f"{utc_now()} {status_message}"])
 
-    _write_redacted_log_file(resolve_log_path(log_relative_path, settings), log_content, settings)
+    _write_redacted_log_file_with_values(
+        resolve_log_path(log_relative_path, settings),
+        log_content,
+        settings,
+        managed_database_redactions,
+    )
 
     finished_at_dt = datetime.now(UTC)
     finished_at = finished_at_dt.isoformat()

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -15,8 +15,8 @@ class ProviderReadiness(BaseModel):
     can_validate_repo: bool
     can_register_webhook: bool
     message: str
-    base_url_configured: bool | None = None
-    base_url: str | None = None
+    base_url_configured: Optional[bool] = None
+    base_url: Optional[str] = None
 
 
 class ProvidersStatus(BaseModel):
@@ -29,7 +29,7 @@ class ProvidersStatus(BaseModel):
 
 class RepoValidationRequest(BaseModel):
     repo_url: str = Field(min_length=1, max_length=500)
-    provider: Provider | None = None
+    provider: Optional[Provider] = None
 
 
 class RepoValidationRead(BaseModel):
@@ -38,7 +38,7 @@ class RepoValidationRead(BaseModel):
     normalized_repo: str
     provider_project_id: str
     full_name: str
-    default_branch: str | None
+    default_branch: Optional[str]
     private: bool
     access_valid: bool
     can_register_webhook: bool
@@ -50,59 +50,67 @@ class WebhookRegistrationRead(BaseModel):
     status: str
     webhook_url: str
     provider_project_id: str
-    provider_webhook_id: str | None = None
+    provider_webhook_id: Optional[str] = None
     active: bool = False
     events: list[str] = Field(default_factory=list)
-    registered_at: str | None = None
-    updated_at: str | None = None
+    registered_at: Optional[str] = None
+    updated_at: Optional[str] = None
     message: str
+
+
+class ProjectDatabaseConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    required: bool = False
+    type: Literal["postgres"] = "postgres"
+    env_var: str = Field(default="DATABASE_URL", pattern=r"^[A-Z_][A-Z0-9_]*$", max_length=63)
 
 
 class ProjectCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=120)
-    slug: str | None = Field(default=None, max_length=63)
+    slug: Optional[str] = Field(default=None, max_length=63)
     provider: Provider
     repo_url: str = Field(min_length=1, max_length=500)
     default_branch: str = Field(default="main", min_length=1, max_length=120)
     tracked_branch: str = Field(default="main", min_length=1, max_length=120)
     deploy_mode: DeployMode = DeployMode.DOCKERFILE
     build_context_path: str = Field(default=".", max_length=255)
-    dockerfile_path: str | None = Field(default="Dockerfile", max_length=255)
-    compose_file_path: str | None = Field(default=None, max_length=255)
-    container_port: int | None = None
-    preview_port: int | None = None
-    health_check_path: str | None = Field(default=None, max_length=255)
-    health_check_url: str | None = Field(default=None, max_length=500)
+    dockerfile_path: Optional[str] = Field(default="Dockerfile", max_length=255)
+    compose_file_path: Optional[str] = Field(default=None, max_length=255)
+    container_port: Optional[int] = None
+    preview_port: Optional[int] = None
+    health_check_path: Optional[str] = Field(default=None, max_length=255)
+    health_check_url: Optional[str] = Field(default=None, max_length=500)
     auto_deploy_enabled: bool = False
-    run_as_heimdall_child: bool = False
-    volumes: list["ProjectServiceVolumeConfig"] | None = None
-    services: list["ProjectServiceConfig"] | None = None
+    volumes: Optional[list["ProjectServiceVolumeConfig"]] = None
+    services: Optional[list["ProjectServiceConfig"]] = None
+    database: Optional[ProjectDatabaseConfig] = None
 
 
 class ProjectUpdate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str | None = Field(default=None, min_length=1, max_length=120)
-    slug: str | None = Field(default=None, max_length=63)
-    provider: Provider | None = None
-    repo_url: str | None = Field(default=None, min_length=1, max_length=500)
-    default_branch: str | None = Field(default=None, min_length=1, max_length=120)
-    tracked_branch: str | None = Field(default=None, min_length=1, max_length=120)
-    deploy_mode: DeployMode | None = None
-    build_context_path: str | None = Field(default=None, max_length=255)
-    dockerfile_path: str | None = Field(default=None, max_length=255)
-    compose_file_path: str | None = Field(default=None, max_length=255)
-    container_port: int | None = None
-    preview_port: int | None = None
-    health_check_path: str | None = Field(default=None, max_length=255)
-    health_check_url: str | None = Field(default=None, max_length=500)
-    auto_deploy_enabled: bool | None = None
-    run_as_heimdall_child: bool | None = None
-    status: Literal["disabled"] | None = None
-    volumes: list["ProjectServiceVolumeConfig"] | None = None
-    services: list["ProjectServiceConfig"] | None = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    slug: Optional[str] = Field(default=None, max_length=63)
+    provider: Optional[Provider] = None
+    repo_url: Optional[str] = Field(default=None, min_length=1, max_length=500)
+    default_branch: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    tracked_branch: Optional[str] = Field(default=None, min_length=1, max_length=120)
+    deploy_mode: Optional[DeployMode] = None
+    build_context_path: Optional[str] = Field(default=None, max_length=255)
+    dockerfile_path: Optional[str] = Field(default=None, max_length=255)
+    compose_file_path: Optional[str] = Field(default=None, max_length=255)
+    container_port: Optional[int] = None
+    preview_port: Optional[int] = None
+    health_check_path: Optional[str] = Field(default=None, max_length=255)
+    health_check_url: Optional[str] = Field(default=None, max_length=500)
+    auto_deploy_enabled: Optional[bool] = None
+    status: Optional[Literal["disabled"]] = None
+    volumes: Optional[list["ProjectServiceVolumeConfig"]] = None
+    services: Optional[list["ProjectServiceConfig"]] = None
+    database: Optional[ProjectDatabaseConfig] = None
 
 
 class ProjectServiceVolumeConfig(BaseModel):
@@ -130,19 +138,40 @@ class ProjectServiceConfig(BaseModel):
     dockerfile_path: str = Field(default="Dockerfile", max_length=255)
     container_port: int
     public: bool = False
-    health_check_path: str | None = Field(default="/", max_length=255)
+    health_check_path: Optional[str] = Field(default="/", max_length=255)
     startup_order: int = 0
     build_env: dict[str, str] = Field(default_factory=dict)
     runtime_env: dict[str, str] = Field(default_factory=dict)
     required_secrets: list[str] = Field(default_factory=list)
     volumes: list[ProjectServiceVolumeConfig] = Field(default_factory=list)
-    run_as_heimdall_child: bool = False
 
 
 class ProjectServiceRead(ProjectServiceConfig):
     model_config = ConfigDict(extra="ignore")
 
     volumes: list[ProjectServiceVolumeRead] = Field(default_factory=list)
+
+
+class ProjectDatabaseRead(BaseModel):
+    id: str
+    required: bool
+    type: Literal["postgres"]
+    env_var: str
+    status: str
+    app_host: str
+    app_port: int
+    network_name: str
+    retention_policy: str
+    orphaned_at: Optional[str] = None
+    provisioned_at: Optional[str] = None
+    last_error: Optional[str] = None
+
+
+class ProjectDatabasePurgeRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    database_id: str = Field(min_length=1)
+    confirmation: Literal["purge managed project database"]
 
 
 class ProjectRead(BaseModel):
@@ -155,32 +184,32 @@ class ProjectRead(BaseModel):
     tracked_branch: str
     deploy_mode: str
     build_context_path: str
-    dockerfile_path: str | None
-    compose_file_path: str | None
+    dockerfile_path: Optional[str]
+    compose_file_path: Optional[str]
     container_port: int
     preview_host: str
     preview_port: int
     preview_url: str
-    health_check_path: str | None
-    health_check_url: str | None
+    health_check_path: Optional[str]
+    health_check_url: Optional[str]
     auto_deploy_enabled: bool
-    run_as_heimdall_child: bool
     status: str
-    current_release_id: str | None
-    current_commit_sha: str | None
+    current_release_id: Optional[str]
+    current_commit_sha: Optional[str]
     created_at: str
     updated_at: str
-    last_deployment_id: str | None = None
-    last_deployment_status: str | None = None
-    last_deployment_at: str | None = None
+    last_deployment_id: Optional[str] = None
+    last_deployment_status: Optional[str] = None
+    last_deployment_at: Optional[str] = None
     has_real_preview: bool
     services: list[ProjectServiceRead] = Field(default_factory=list)
-    webhook_registration: WebhookRegistrationRead | None = None
+    database: Optional[ProjectDatabaseRead] = None
+    webhook_registration: Optional[WebhookRegistrationRead] = None
 
 
 class DeploymentRequest(BaseModel):
-    ref: str | None = Field(default=None, max_length=255)
-    commit_sha: str | None = Field(default=None, max_length=64)
+    ref: Optional[str] = Field(default=None, max_length=255)
+    commit_sha: Optional[str] = Field(default=None, max_length=64)
     trigger_type: TriggerType = TriggerType.MANUAL
     dry_run: bool = False
 
@@ -189,19 +218,19 @@ class DeploymentRead(BaseModel):
     id: str
     project_id: str
     trigger_type: str
-    requested_ref: str | None
-    requested_commit_sha: str | None
-    resolved_commit_sha: str | None
-    image_tag: str | None
-    previous_release_id: str | None
-    target_release_id: str | None
+    requested_ref: Optional[str]
+    requested_commit_sha: Optional[str]
+    resolved_commit_sha: Optional[str]
+    image_tag: Optional[str]
+    previous_release_id: Optional[str]
+    target_release_id: Optional[str]
     status: str
-    status_message: str | None
+    status_message: Optional[str]
     is_dry_run: bool
-    started_at: str | None
-    finished_at: str | None
-    duration_ms: int | None
-    log_path: str | None
+    started_at: Optional[str]
+    finished_at: Optional[str]
+    duration_ms: Optional[int]
+    log_path: Optional[str]
     created_at: str
 
 
@@ -212,13 +241,13 @@ class ReleaseRead(BaseModel):
     commit_sha: str
     short_commit_sha: str
     image_tag: str
-    image_id: str | None
+    image_id: Optional[str]
     status: str
     is_current: bool
     is_dry_run: bool
     created_at: str
-    activated_at: str | None
-    last_used_at: str | None
+    activated_at: Optional[str]
+    last_used_at: Optional[str]
     rollback_supported: bool
     services: list["ReleaseServiceRead"] = Field(default_factory=list)
 
@@ -226,23 +255,23 @@ class ReleaseRead(BaseModel):
 class ReleaseServiceRead(BaseModel):
     name: str
     image_tag: str
-    image_id: str | None = None
-    container_name: str | None = None
+    image_id: Optional[str] = None
+    container_name: Optional[str] = None
     container_port: int
     public: bool
-    preview_url: str | None = None
-    internal_url: str | None = None
+    preview_url: Optional[str] = None
+    internal_url: Optional[str] = None
     status: str
 
 
 class DeploymentResult(BaseModel):
     deployment: DeploymentRead
-    release: ReleaseRead | None = None
+    release: Optional[ReleaseRead] = None
 
 
 class DeploymentLogsRead(BaseModel):
     deployment_id: str
-    log_path: str | None
+    log_path: Optional[str]
     content: str
 
 
@@ -259,18 +288,18 @@ class RollbackResponse(BaseModel):
 class WebhookEventRead(BaseModel):
     id: str
     provider: str
-    event_type: str | None
-    delivery_id: str | None
-    project_id: str | None
-    branch: str | None
-    commit_sha: str | None
+    event_type: Optional[str]
+    delivery_id: Optional[str]
+    project_id: Optional[str]
+    branch: Optional[str]
+    commit_sha: Optional[str]
     status: str
     received_at: str
-    deployment_id: str | None
-    error_message: str | None
+    deployment_id: Optional[str]
+    error_message: Optional[str]
 
 
 class WebhookResponse(BaseModel):
     status: str
     webhook_event: WebhookEventRead
-    deployment: DeploymentRead | None = None
+    deployment: Optional[DeploymentRead] = None

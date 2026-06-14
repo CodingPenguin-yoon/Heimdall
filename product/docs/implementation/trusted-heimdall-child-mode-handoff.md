@@ -1,5 +1,11 @@
 # Nested Heimdall Child Deploy Minimum Slice Handoff
 
+> Deprecated legacy handoff. Nested/child Heimdall is historical context, not
+> the supported self-hosting model. Use
+> [Single Outer Heimdall Direction](single-outer-heimdall-direction.md) and
+> [Managed Project PostgreSQL](../architecture/managed-project-postgresql.md)
+> for current direction.
+
 ## Purpose
 
 Concise handoff for implementing the minimum child-runner slice from

@@ -1,23 +1,32 @@
 # AGENTS.md
 
 ## Heimdall operating mode
-- The main session is the coordinator.
-- For non-trivial tasks, delegate to explorer, reviewer, docs_researcher, then worker.
-- Only worker is allowed to edit code.
-- Do not start worker until explorer and reviewer have returned.
+- The main session is the coordinator and may edit code directly.
+- Use subagents only for large, risky, or unclear tasks.
 - Prefer concise summaries over raw logs and long command dumps.
-- Keep the main thread focused on requirements, decisions, and final output.
+- Keep the main thread focused on requirements, decisions, validation, and final output.
+
+## When to delegate
+Delegate when the task involves:
+- broad architecture changes
+- database schema or migrations
+- security-sensitive behavior
+- deployment/runtime behavior
+- unfamiliar framework/API assumptions
+- large review surface
+
+## Delegation pattern
+- explorer: use when scope is unclear.
+- reviewer: use before or after risky changes.
+- docs_researcher: use only when external docs or framework behavior may have changed.
+- worker: use for large implementation slices when parallel review is useful.
 
 ## When to skip multi-agent
-- Single-file trivial edits
-- Known typo fixes
-- Mechanical updates with already-known file targets
-
-## Delegation order
-1. explorer scopes code paths, impacted files, symbols, configs, migrations, and likely tests
-2. reviewer checks correctness, regressions, security, and missing coverage
-3. docs_researcher verifies framework/API/config assumptions
-4. worker makes the smallest coherent change
+- single-file edits
+- targeted bug fixes
+- already-known file targets
+- tests/docs-only changes
+- mechanical refactors
 
 ## Definition of done
 - Scope is clear
@@ -26,6 +35,8 @@
 - Remaining risk is explicitly stated
 
 ## Avoid
+- mandatory delegation for every non-trivial task
+- serial waiting when the coordinator can safely proceed
 - broad scans when targeted reads are enough
 - speculative refactors
 - style-only review comments

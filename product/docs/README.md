@@ -4,19 +4,29 @@ Heimdall is a Git-based preview deployment manager. These docs are organized by 
 
 ## Read First
 
-1. [Product Overview](product/overview.md)
-2. [Single-server Preview Architecture](architecture/single-server-preview.md)
+1. [Single-server Preview Architecture](architecture/single-server-preview.md)
+2. [Managed Project PostgreSQL](architecture/managed-project-postgresql.md)
 3. [Self-hosting Storage Architecture](architecture/self-hosting-storage.md)
-4. [Docker Project Volume Support Implementation Plan](implementation/docker-project-volume-support.md)
-5. [Nested Heimdall Child Deploy Implementation Plan](implementation/trusted-heimdall-child-mode.md)
-6. [Self-hosting Docker Runbook](operations/self-hosting-docker.md)
-7. [Nested Heimdall Operations](operations/nested-heimdall-operations.md)
-8. [Data Model](architecture/data-model.md)
-9. [Project Config YAML](config/project-yaml.md)
-10. [Legacy UI Migration Plan](ui/legacy-ui-migration.md)
-11. [Implementation Roadmap](implementation/roadmap.md)
-12. [Preview Deployment Pipeline](implementation/preview-deployment-pipeline.md)
-13. [Multi-service Preview Deployment Plan](implementation/multi-service-preview.md)
+4. [Self-hosting Docker Runbook](operations/self-hosting-docker.md)
+5. [Implementation Roadmap](implementation/roadmap.md)
+6. [Project Config YAML](config/project-yaml.md)
+7. [Product Overview](product/overview.md)
+8. [Single Outer Heimdall Direction](implementation/single-outer-heimdall-direction.md)
+9. [Docker Project Volume Support Implementation Plan](implementation/docker-project-volume-support.md)
+10. [Data Model](architecture/data-model.md)
+11. [Preview Deployment Pipeline](implementation/preview-deployment-pipeline.md)
+12. [Multi-service Preview Deployment Plan](implementation/multi-service-preview.md)
+
+## Legacy / Deprecated
+
+These docs describe implemented or historical child Heimdall behavior. They are
+not the primary supported self-hosting path for new work.
+
+- [Nested Heimdall Operations](operations/nested-heimdall-operations.md)
+- [Nested Heimdall Child Deploy Implementation Plan](implementation/trusted-heimdall-child-mode.md)
+- [Nested Heimdall Child Deploy Handoff](implementation/trusted-heimdall-child-mode-handoff.md)
+- [Single Outer Child Cleanup Instructions](implementation/single-outer-child-cleanup-instructions.md)
+- [Legacy Child Removal Note](implementation/legacy-child-removal-note.md)
 
 ## Directory Map
 
@@ -32,9 +42,6 @@ config/
 
 operations/
   Operator runbooks for Docker self-hosting.
-
-ui/
-  Web UI direction and legacy design migration.
 
 implementation/
   Build order and near-term milestones.
@@ -54,6 +61,10 @@ In scope:
 - release tracking
 - rollback control
 - web UI control surface
+- Heimdall control DB backed by SQLite in local/dev or PostgreSQL in the
+  product Compose path
+- managed project PostgreSQL provisioning, deploy-time injection, retry,
+  delete-orphan retention, purge, and UI lifecycle controls
 
 Out of scope:
 
@@ -65,10 +76,15 @@ Out of scope:
 - generated project bind mounts until the
   [implementation plan](implementation/docker-project-volume-support.md) is
   implemented
-- Docker Compose deployment
+- project `deploy_mode=compose` deployment
 - unrestricted shell execution
+- managed project PostgreSQL backups, orphan inventory/adoption, password
+  rotation, point-in-time restore, and HA beyond operator-managed workflows
 
 Self-hosted Docker operation requires operator-approved Heimdall API containers
 with access to `/var/run/docker.sock`. That socket effectively grants control
 of the VM Docker daemon and must never be mounted into normal user preview
 containers.
+
+The primary self-hosting path is a single outer Heimdall API/Web instance.
+Nested child Heimdall is legacy/deprecated for the near term.

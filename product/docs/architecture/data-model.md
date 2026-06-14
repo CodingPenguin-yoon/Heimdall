@@ -6,6 +6,8 @@ Current MVP foundation models:
 
 - Project
 - ProjectService
+- ProjectDatabase
+- ProjectDatabaseBinding
 - Deployment
 - Release
 - ReleaseService
@@ -37,7 +39,12 @@ Key fields:
 - status
 - current real release reference
 
-Project settings are controlled through the UI/API. Repo YAML can import/export build/runtime spec, but Heimdall keeps operational assignment state in SQLite.
+Project settings are controlled through the UI/API. Repo YAML can import/export
+build/runtime spec, but Heimdall keeps operational assignment state in its
+control database. SQLite is available for local/dev control state; PostgreSQL
+is supported when `HEIMDALL_DATABASE_URL` points at an operator-managed control
+Postgres database. `HEIMDALL_DATABASE_URL` is not a project application
+database URL.
 
 ## ProjectService
 
@@ -56,7 +63,58 @@ Key fields:
 - startup order
 - build/runtime environment JSON
 - required secret names JSON
-- `run_as_heimdall_child`, limited to at most one service per project
+
+## ProjectDatabase
+
+Implemented model for managed project application PostgreSQL metadata.
+
+The application database itself lives in the separate project PostgreSQL
+service/cluster, not in Heimdall's control database. The control database
+stores only metadata needed to provision, audit, inject, retain, orphan, or
+purge the project database resource.
+
+Key fields:
+
+- project ID
+- generated database name
+- generated role/user name
+- password secret reference
+- app host and port used for deploy-time URL assembly
+- Docker DB network name
+- lifecycle status
+- retention/orphan state
+- provisioned timestamp
+- last error
+
+Generated database and role names are based on immutable project IDs, not
+mutable slugs. Heimdall stores the exact generated identifier because
+PostgreSQL truncates long identifiers and SQL must quote identifiers with
+structured APIs.
+
+Forbidden fields:
+
+- raw project database password
+- raw project `DATABASE_URL`
+- provisioner/admin `DATABASE_URL`
+
+## ProjectDatabaseBinding
+
+Implemented model for mapping a managed project database to service env
+injection.
+
+Key fields:
+
+- project database ID
+- project ID
+- optional service ID for multi-service projects
+- env var name, usually `DATABASE_URL`
+- required secret name, when imported from YAML dependency intent
+
+The binding tells deployment which service receives a deploy-time assembled
+`DATABASE_URL`. It must not store the assembled value.
+
+There is no implemented project database audit-event table yet. Lifecycle
+status and redacted last error live on `project_databases`.
 
 ## Deployment
 
@@ -126,7 +184,8 @@ Real Docker releases use image-backed statuses such as `current` and
 
 Tracks preview host/port ownership.
 
-This prevents duplicate preview ports across projects. Host ports belong to Heimdall DB/runtime state, not repo YAML.
+This prevents duplicate preview ports across projects. Host ports belong to
+Heimdall API database/runtime state, not repo YAML.
 
 ## WebhookEvent
 

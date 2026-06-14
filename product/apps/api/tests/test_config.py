@@ -11,15 +11,13 @@ from app.config import Settings, _load_dotenv_file
 def make_settings(
     tmp_path,
     *,
+    database_url: str | None = None,
     volume_root_host: Path | None = None,
     volume_root_container: Path | None = None,
-    child_runner_enabled: bool = False,
-    child_root_host: Path | None = None,
-    child_root_container: Path | None = None,
 ) -> Settings:
     return Settings(
         runtime_dir=tmp_path / "runtime",
-        database_url=f"sqlite:///{tmp_path / 'heimdall.db'}",
+        database_url=database_url or f"sqlite:///{tmp_path / 'heimdall.db'}",
         public_base_url="http://127.0.0.1:8000",
         preview_host="127.0.0.1",
         preview_port_start=18000,
@@ -31,9 +29,6 @@ def make_settings(
         gitlab_webhook_secret=None,
         volume_root_host=volume_root_host,
         volume_root_container=volume_root_container,
-        child_runner_enabled=child_runner_enabled,
-        child_root_host=child_root_host,
-        child_root_container=child_root_container,
     )
 
 
@@ -102,6 +97,153 @@ def test_settings_exposes_provider_credentials(tmp_path, monkeypatch):
     assert settings.gitlab_webhook_secret == "gitlab-secret"
 
 
+def test_settings_exposes_optional_preview_health_host(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HEIMDALL_DATABASE_URL", f"sqlite:///{tmp_path / 'heimdall.db'}")
+    monkeypatch.setenv("HEIMDALL_PREVIEW_HOST", "127.0.0.1")
+    monkeypatch.setenv("HEIMDALL_PREVIEW_HEALTH_HOST", "host.docker.internal")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.preview_host == "127.0.0.1"
+    assert settings.preview_health_host == "host.docker.internal"
+
+
+@pytest.mark.parametrize(
+    ("database_url", "backend"),
+    [
+        ("sqlite:////tmp/heimdall.db", "sqlite"),
+        ("postgresql://heimdall:secret@postgres:5432/heimdall", "postgresql"),
+        ("postgres://heimdall:secret@postgres:5432/heimdall", "postgresql"),
+    ],
+)
+def test_database_url_supported_backends(tmp_path, database_url, backend):
+    settings = make_settings(tmp_path, database_url=database_url)
+
+    assert settings.database_backend == backend
+
+
+def test_postgres_database_url_does_not_expose_database_path(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        database_url="postgresql://heimdall:secret@postgres:5432/heimdall",
+    )
+
+    assert settings.is_postgres_database is True
+    with pytest.raises(ValueError, match="sqlite"):
+        settings.database_path
+
+
+def test_unsupported_database_url_is_rejected(tmp_path):
+    settings = make_settings(tmp_path, database_url="mysql://heimdall:secret@db/heimdall")
+
+    with pytest.raises(ValueError, match="HEIMDALL_DATABASE_URL"):
+        settings.ensure_runtime_dirs()
+
+
+def test_ensure_runtime_dirs_creates_sqlite_database_parent(tmp_path):
+    database_path = tmp_path / "state" / "nested" / "heimdall.db"
+    settings = make_settings(tmp_path, database_url=f"sqlite:///{database_path}")
+
+    settings.ensure_runtime_dirs()
+
+    assert database_path.parent.is_dir()
+
+
+def test_ensure_runtime_dirs_accepts_postgres_without_database_path(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        database_url="postgresql://heimdall:secret@postgres:5432/heimdall",
+    )
+
+    settings.ensure_runtime_dirs()
+
+    assert settings.runtime_dir.is_dir()
+    assert settings.logs_dir.is_dir()
+    assert settings.workspaces_dir.is_dir()
+    assert settings.state_dir.is_dir()
+
+
+def test_get_settings_accepts_postgres_url_without_database_path(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HEIMDALL_DATABASE_URL", "postgresql://heimdall:secret@postgres:5432/heimdall")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.is_postgres_database is True
+    assert settings.state_dir.is_dir()
+
+
+def test_project_database_settings_default_without_startup_admin_url(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HEIMDALL_DATABASE_URL", f"sqlite:///{tmp_path / 'heimdall.db'}")
+    monkeypatch.setenv("HEIMDALL_PROJECT_DATABASE_ADMIN_URL", "")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.project_database_admin_url is None
+    assert settings.project_database_app_host == "project-postgres"
+    assert settings.project_database_app_port == 5432
+    assert settings.project_database_network == "heimdall-project-db"
+    with pytest.raises(ValueError, match="HEIMDALL_PROJECT_DATABASE_ADMIN_URL"):
+        settings.require_project_database_settings()
+
+
+def test_project_database_settings_require_only_when_used(tmp_path):
+    settings = make_settings(tmp_path)
+
+    settings.ensure_runtime_dirs()
+    with pytest.raises(ValueError, match="HEIMDALL_PROJECT_DATABASE_ADMIN_URL"):
+        settings.require_project_database_settings()
+
+
+def test_project_database_settings_parse_and_require(tmp_path, monkeypatch):
+    from app.config import get_settings
+
+    admin_url = "postgres://admin:secret@project-postgres:5432/postgres"
+    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
+    monkeypatch.setenv("HEIMDALL_DATABASE_URL", f"sqlite:///{tmp_path / 'heimdall.db'}")
+    monkeypatch.setenv("HEIMDALL_PROJECT_DATABASE_ADMIN_URL", admin_url)
+    monkeypatch.setenv("HEIMDALL_PROJECT_DATABASE_APP_HOST", "app-db")
+    monkeypatch.setenv("HEIMDALL_PROJECT_DATABASE_APP_PORT", "15432")
+    monkeypatch.setenv("HEIMDALL_PROJECT_DATABASE_NETWORK", "app-db-net")
+
+    get_settings.cache_clear()
+    settings = get_settings()
+    get_settings.cache_clear()
+
+    assert settings.require_project_database_settings() == (admin_url, "app-db", 15432, "app-db-net")
+
+
+def test_project_database_settings_reject_reserved_control_network(tmp_path):
+    settings = make_settings(
+        tmp_path,
+        database_url=f"sqlite:///{tmp_path / 'heimdall.db'}",
+    )
+    settings = Settings(
+        **{
+            **settings.__dict__,
+            "project_database_admin_url": "postgres://admin:secret@project-postgres:5432/postgres",
+            "project_database_network": "heimdall-control",
+        }
+    )
+
+    with pytest.raises(ValueError, match="heimdall-control"):
+        settings.require_project_database_settings()
+
+
 def test_volume_roots_are_optional_when_unset(tmp_path, monkeypatch):
     from app.config import get_settings
 
@@ -134,44 +276,6 @@ def test_volume_roots_are_parsed_without_startup_validation(tmp_path, monkeypatc
 
     assert settings.volume_root_host == host_root
     assert settings.volume_root_container == container_root
-
-
-def test_child_runner_settings_are_parsed_without_startup_validation(tmp_path, monkeypatch):
-    from app.config import get_settings
-
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.setenv("HEIMDALL_DATABASE_URL", f"sqlite:///{tmp_path / 'heimdall.db'}")
-    monkeypatch.setenv("HEIMDALL_CHILD_RUNNER_ENABLED", "true")
-    monkeypatch.setenv("HEIMDALL_CHILD_ROOT_HOST", str(host_root))
-    monkeypatch.setenv("HEIMDALL_CHILD_ROOT_CONTAINER", str(container_root))
-
-    get_settings.cache_clear()
-    settings = get_settings()
-    get_settings.cache_clear()
-
-    assert settings.child_runner_enabled is True
-    assert settings.child_root_host == host_root
-    assert settings.child_root_container == container_root
-
-
-def test_child_runner_defaults_to_disabled(tmp_path, monkeypatch):
-    from app.config import get_settings
-
-    monkeypatch.setenv("HEIMDALL_RUNTIME_DIR", str(tmp_path / "runtime"))
-    monkeypatch.setenv("HEIMDALL_DATABASE_URL", f"sqlite:///{tmp_path / 'heimdall.db'}")
-    monkeypatch.delenv("HEIMDALL_CHILD_RUNNER_ENABLED", raising=False)
-    monkeypatch.delenv("HEIMDALL_CHILD_ROOT_HOST", raising=False)
-    monkeypatch.delenv("HEIMDALL_CHILD_ROOT_CONTAINER", raising=False)
-
-    get_settings.cache_clear()
-    settings = get_settings()
-    get_settings.cache_clear()
-
-    assert settings.child_runner_enabled is False
-    assert settings.child_root_host is None
-    assert settings.child_root_container is None
 
 
 def test_require_volume_roots_rejects_missing_roots(tmp_path):
@@ -248,90 +352,3 @@ def test_require_volume_roots_accepts_valid_directories(tmp_path):
     )
 
     assert settings.require_volume_roots() == (host_root, container_root)
-
-
-def test_require_child_runner_rejects_disabled_gate(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    host_root.mkdir()
-    container_root.mkdir()
-    settings = make_settings(tmp_path, child_root_host=host_root, child_root_container=container_root)
-
-    with pytest.raises(ValueError, match="HEIMDALL_CHILD_RUNNER_ENABLED"):
-        settings.require_child_runner()
-
-
-def test_require_child_runner_rejects_missing_roots(tmp_path):
-    settings = make_settings(tmp_path, child_runner_enabled=True)
-
-    with pytest.raises(ValueError, match="HEIMDALL_CHILD_ROOT_HOST"):
-        settings.require_child_runner()
-
-
-def test_require_child_runner_rejects_relative_roots(tmp_path):
-    container_root = tmp_path / "child-container"
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        child_runner_enabled=True,
-        child_root_host=Path("relative-root"),
-        child_root_container=container_root,
-    )
-
-    with pytest.raises(ValueError, match="absolute"):
-        settings.require_child_runner()
-
-
-def test_require_child_runner_rejects_nonexistent_roots(tmp_path):
-    container_root = tmp_path / "child-container"
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        child_runner_enabled=True,
-        child_root_host=tmp_path / "missing-root",
-        child_root_container=container_root,
-    )
-
-    with pytest.raises(ValueError, match="exist"):
-        settings.require_child_runner()
-
-
-def test_require_child_runner_rejects_symlink_roots(tmp_path):
-    target_root = tmp_path / "target-root"
-    target_root.mkdir()
-    symlink_root = tmp_path / "symlink-root"
-    try:
-        symlink_root.symlink_to(target_root, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable: {exc}")
-    container_root = tmp_path / "child-container"
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        child_runner_enabled=True,
-        child_root_host=symlink_root,
-        child_root_container=container_root,
-    )
-
-    with pytest.raises(ValueError, match="symlink"):
-        settings.require_child_runner()
-
-
-def test_require_child_runner_accepts_valid_directories_and_derives_child_paths(tmp_path):
-    host_root = tmp_path / "child-host"
-    container_root = tmp_path / "child-container"
-    host_root.mkdir()
-    container_root.mkdir()
-    settings = make_settings(
-        tmp_path,
-        child_runner_enabled=True,
-        child_root_host=host_root,
-        child_root_container=container_root,
-    )
-
-    assert settings.require_child_runner() == (host_root, container_root)
-    paths = settings.child_runner_paths("project_abc123")
-    assert paths.host_runtime == host_root / "project_abc123" / "runtime"
-    assert paths.host_project_volumes == host_root / "project_abc123" / "project-volumes"
-    assert paths.container_runtime == container_root / "project_abc123" / "runtime"
-    assert paths.container_project_volumes == container_root / "project_abc123" / "project-volumes"

@@ -1,11 +1,17 @@
 # Nested Heimdall Operations
 
+> Deprecated legacy path: nested/child Heimdall is not the primary supported
+> self-hosting model for new work. The current code and schema still exist, and
+> this runbook remains for operators who must understand or maintain existing
+> child deployments during the compatibility window. Prefer the
+> [single outer Heimdall direction](../implementation/single-outer-heimdall-direction.md).
+
 ## Purpose
 
-This runbook describes how to operate one Heimdall instance that deploys another
-Heimdall instance.
+This runbook describes the legacy mode where one Heimdall instance deploys
+another Heimdall instance.
 
-The supported model is:
+The legacy model is:
 
 ```text
 VM Docker daemon

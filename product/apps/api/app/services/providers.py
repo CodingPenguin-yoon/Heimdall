@@ -3,7 +3,6 @@ from __future__ import annotations
 import ipaddress
 import json
 import re
-import sqlite3
 from dataclasses import dataclass
 from urllib.parse import quote, urlparse, urlunparse
 
@@ -11,7 +10,7 @@ import httpx
 from fastapi import HTTPException, status
 
 from ..config import Settings, get_settings
-from ..db import connect, row_to_dict
+from ..db import DBRow, connect, row_to_dict
 from ..models import Provider
 from ..schemas import (
     ProviderReadiness,
@@ -438,7 +437,7 @@ def _events_from_value(value: object) -> list[str]:
     return []
 
 
-def _serialize_registration(row: sqlite3.Row) -> WebhookRegistrationRead:
+def _serialize_registration(row: DBRow) -> WebhookRegistrationRead:
     data = row_to_dict(row)
     assert data is not None
     try:

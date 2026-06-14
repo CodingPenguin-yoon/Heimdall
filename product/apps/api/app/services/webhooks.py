@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
 import uuid
 import hashlib
 import hmac
@@ -9,7 +8,7 @@ import json
 from fastapi import HTTPException, Request
 
 from ..config import get_settings
-from ..db import connect, row_to_dict
+from ..db import DBConnection, DBRow, connect, row_to_dict
 from ..models import ACTIVE_DEPLOYMENT_STATUSES, DeploymentStatus, TriggerType, WebhookEventStatus
 from ..schemas import DeploymentRead, WebhookEventRead, WebhookResponse
 from ..validation import branch_from_ref, normalize_repo_url
@@ -17,13 +16,13 @@ from .deployments import _serialize_deployment
 from .projects import utc_now
 
 
-def _serialize_webhook_event(row: sqlite3.Row) -> WebhookEventRead:
+def _serialize_webhook_event(row: DBRow) -> WebhookEventRead:
     data = row_to_dict(row)
     assert data is not None
     return WebhookEventRead(**data)
 
 
-def _existing_event(connection: sqlite3.Connection, provider: str, delivery_id: str | None) -> sqlite3.Row | None:
+def _existing_event(connection: DBConnection, provider: str, delivery_id: str | None) -> DBRow | None:
     if not delivery_id:
         return None
     return connection.execute(
@@ -32,7 +31,7 @@ def _existing_event(connection: sqlite3.Connection, provider: str, delivery_id: 
     ).fetchone()
 
 
-def _find_project_by_repo(connection: sqlite3.Connection, provider: str, repo_url: str | None) -> sqlite3.Row | None:
+def _find_project_by_repo(connection: DBConnection, provider: str, repo_url: str | None) -> DBRow | None:
     if not repo_url:
         return None
     normalized = normalize_repo_url(repo_url)
@@ -44,7 +43,7 @@ def _find_project_by_repo(connection: sqlite3.Connection, provider: str, repo_ur
     return None
 
 
-def _active_deployment_exists(connection: sqlite3.Connection, project_id: str) -> bool:
+def _active_deployment_exists(connection: DBConnection, project_id: str) -> bool:
     row = connection.execute(
         """
         SELECT 1
@@ -58,7 +57,7 @@ def _active_deployment_exists(connection: sqlite3.Connection, project_id: str) -
 
 
 def _insert_event(
-    connection: sqlite3.Connection,
+    connection: DBConnection,
     *,
     provider: str,
     event_type: str | None,
@@ -69,7 +68,7 @@ def _insert_event(
     status: str,
     error_message: str | None = None,
     deployment_id: str | None = None,
-) -> sqlite3.Row:
+) -> DBRow:
     event_id = f"hook_{uuid.uuid4().hex[:12]}"
     received_at = utc_now()
     connection.execute(
@@ -119,13 +118,13 @@ def _extract_gitlab(payload: dict, request: Request) -> tuple[str | None, str | 
 
 
 def _create_queued_deployment(
-    connection: sqlite3.Connection,
+    connection: DBConnection,
     *,
     project_id: str,
     trigger_type: str,
     requested_ref: str | None,
     requested_commit_sha: str | None,
-) -> sqlite3.Row:
+) -> DBRow:
     deployment_id = f"deploy_{uuid.uuid4().hex[:12]}"
     created_at = utc_now()
     connection.execute(

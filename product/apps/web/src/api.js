@@ -38,6 +38,15 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
+  retryProjectDatabase: (projectId) =>
+    request(`/api/projects/${projectId}/database/retry`, {
+      method: "POST",
+    }),
+  purgeProjectDatabase: (projectId, payload) =>
+    request(`/api/projects/${projectId}/database/purge`, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    }),
   deleteProject: (projectId) =>
     request(`/api/projects/${projectId}`, {
       method: "DELETE",

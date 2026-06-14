@@ -315,7 +315,8 @@ tbody tr.is-selected {
 }
 
 .validation-result,
-.readiness-grid {
+.readiness-grid,
+.database-meta-grid {
   display: grid;
   gap: 0.55rem;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -332,7 +333,8 @@ tbody tr.is-selected {
 }
 
 .validation-result div,
-.readiness-grid div {
+.readiness-grid div,
+.database-meta-grid div {
   display: grid;
   gap: 0.22rem;
   min-width: 0;
@@ -345,6 +347,38 @@ tbody tr.is-selected {
 .validation-wide,
 .readiness-wide {
   grid-column: 1 / -1;
+}
+
+.database-panel,
+.database-form-block,
+.database-binding-list {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.database-panel {
+  padding: 0.72rem;
+  border: 1px solid #e0e5ea;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.database-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.database-panel-header > div:first-child {
+  display: grid;
+  gap: 0.22rem;
+}
+
+.database-binding-list {
+  align-items: start;
+  grid-template-columns: repeat(auto-fit, minmax(9rem, max-content));
 }
 
 .readiness-grid small {
@@ -696,6 +730,7 @@ tbody tr.is-selected {
   .field-action-row,
   .validation-result,
   .readiness-grid,
+  .database-meta-grid,
   .stats-grid {
     grid-template-columns: 1fr;
   }

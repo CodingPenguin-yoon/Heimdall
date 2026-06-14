@@ -14,6 +14,8 @@ GitHub or GitLab projects are registered in Heimdall. When the tracked branch is
 - Deployment logs and history
 - Docker image based rollback
 - Web UI control for project status, manual deploy, auto deploy, and rollback
+- Managed project PostgreSQL provisioning, deploy-time `DATABASE_URL`
+  injection, retry, delete-orphan retention, and explicit purge
 
 ## Non-goals
 
@@ -28,6 +30,7 @@ GitHub or GitLab projects are registered in Heimdall. When the tracked branch is
 Start from the docs index:
 
 - [Docs README](docs/README.md)
+- [Managed Project PostgreSQL Design](docs/architecture/managed-project-postgresql.md)
 - [Self-hosting Storage Architecture](docs/architecture/self-hosting-storage.md)
 - [Self-hosting Docker Runbook](docs/operations/self-hosting-docker.md)
 
@@ -40,6 +43,37 @@ The API image listens on `8000` and expects persistent runtime storage at
 Mounting `/var/run/docker.sock` into the API container is high trust. It gives
 Heimdall effective control of the VM Docker daemon and should only be used for a
 trusted self-hosted controller.
+
+## Docker Compose
+
+For single-VM self-hosting with API, Web, Heimdall control Postgres, and the
+prepared project Postgres service:
+
+```bash
+cd product
+sudo install -d -m 0750 /srv/heimdall/runtime
+sudo install -d -m 0750 /srv/heimdall/control-postgres
+sudo install -d -m 0750 /srv/heimdall/project-postgres
+cp .env.compose.example .env
+# Edit .env: set URL-safe Postgres passwords and replace 192.0.2.10 with the VM IP.
+docker compose --env-file .env -f compose.yaml up -d --build
+```
+
+`HEIMDALL_DATABASE_URL` is the Heimdall control database only and points at
+`heimdall-postgres` in Compose. `project-postgres` is the target service for
+managed project application databases. Heimdall provisions one database and
+role per enabled project, stores the generated password only under the ignored
+runtime secret store, and injects an assembled `DATABASE_URL` only at deploy
+time.
+
+Both Postgres services are internal to Docker networks and are not published on
+host port `5432`. The Web image bakes `VITE_API_BASE_URL` at build time, so set
+it to the browser-visible API URL and rebuild after changing it. If the API runs
+in Docker and cannot health-check browser preview URLs directly, set
+`HEIMDALL_PREVIEW_HEALTH_HOST` to the host name reachable from the API container.
+
+See the [Self-hosting Docker Runbook](docs/operations/self-hosting-docker.md)
+for settings, health checks, and caveats.
 
 ## Run
 
