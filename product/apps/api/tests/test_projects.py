@@ -281,6 +281,35 @@ def test_no_volume_project_create_works_without_volume_roots(client):
     assert created["services"][0]["volumes"] == []
 
 
+def test_single_dockerfile_project_accepts_service_env(client):
+    response = client.post(
+        "/api/projects",
+        json=project_payload(
+            services=[
+                {
+                    "name": "app",
+                    "build_context_path": ".",
+                    "dockerfile_path": "Dockerfile",
+                    "container_port": 8080,
+                    "public": True,
+                    "health_check_path": "/health",
+                    "build_env": {"VITE_API_BASE_URL": "/api"},
+                    "runtime_env": {"PORT": "8080"},
+                    "required_secrets": ["GJALLAR_DATABASE_URL"],
+                }
+            ],
+        ),
+    )
+
+    assert response.status_code == 201, response.text
+    created = response.json()
+    assert created["deploy_mode"] == "dockerfile"
+    assert created["services"][0]["name"] == "app"
+    assert created["services"][0]["build_env"] == {"VITE_API_BASE_URL": "/api"}
+    assert created["services"][0]["runtime_env"] == {"PORT": "8080"}
+    assert created["services"][0]["required_secrets"] == ["GJALLAR_DATABASE_URL"]
+
+
 def test_project_database_requires_admin_url_only_when_enabled(client):
     no_database_response = client.post("/api/projects", json=project_payload(name="No DB API"))
     assert no_database_response.status_code == 201, no_database_response.text

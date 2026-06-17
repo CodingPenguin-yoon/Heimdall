@@ -20,6 +20,9 @@ From the repository root:
 ```bash
 cd product
 sudo install -d -m 0750 /srv/heimdall/runtime
+sudo install -d -m 0750 /srv/heimdall/runtime/logs/deployments
+sudo install -d -m 0750 /srv/heimdall/runtime/workspaces
+sudo install -d -m 0750 /srv/heimdall/runtime/secrets/env-bundles
 sudo install -d -m 0750 /srv/heimdall/control-postgres
 sudo install -d -m 0750 /srv/heimdall/project-postgres
 cp .env.compose.example .env
@@ -58,10 +61,18 @@ Important Compose settings:
 - `HEIMDALL_DATABASE_URL` is the Heimdall control database URL only. In Compose
   it should use the service name `heimdall-postgres`, as in
   `postgresql://heimdall:<password>@heimdall-postgres:5432/heimdall`.
+- `HEIMDALL_RUNTIME_DIR_HOST` is mounted into the API container at
+  `/var/lib/heimdall`. In the PostgreSQL-backed Compose path it stores logs,
+  Git workspaces, and secret files; the control database is in
+  `HEIMDALL_CONTROL_POSTGRES_DATA_DIR`, not `runtime/state`.
 - `project-postgres` is the service for managed project application databases.
   Heimdall can create per-project databases and roles, inject generated
   `DATABASE_URL` values at deploy time, and purge resources after exact typed
   confirmation.
+- Uploaded service `.env` bundles are stored as secret files under
+  `/var/lib/heimdall/secrets/env-bundles` in the API container, which maps to
+  `${HEIMDALL_RUNTIME_DIR_HOST}/secrets/env-bundles` on the VM. Heimdall stores
+  only metadata such as key names and checksums in the control database.
 - `HEIMDALL_PROJECT_DATABASE_ADMIN_URL` is API-only provisioner config.
   It must never be injected into preview containers.
 - Neither Postgres service is published on host port `5432`; only containers on
@@ -89,18 +100,23 @@ Important Compose settings:
 
 ## Host Directory Setup
 
-Create the outer instance directories before starting Heimdall:
+Create the outer instance directories before starting Heimdall. For the
+PostgreSQL-backed product Compose path, `runtime/state` is not required for the
+control database; keep `runtime/logs`, `runtime/workspaces`, and
+`runtime/secrets/env-bundles`.
 
 ```bash
 sudo install -d -m 0750 /srv/heimdall/config
-sudo install -d -m 0750 /srv/heimdall/runtime/state
 sudo install -d -m 0750 /srv/heimdall/runtime/logs/deployments
 sudo install -d -m 0750 /srv/heimdall/runtime/workspaces
-sudo install -d -m 0750 /srv/heimdall/runtime/secrets
-sudo install -d -m 0750 /srv/heimdall/runtime/env
+sudo install -d -m 0750 /srv/heimdall/runtime/secrets/env-bundles
 sudo install -d -m 0750 /srv/heimdall/control-postgres
 sudo install -d -m 0750 /srv/heimdall/project-postgres
 ```
+
+Create `/srv/heimdall/runtime/state` only for SQLite-backed local/dev or plain
+Docker runs. Do not use `/srv/heimdall/children` for env bundles; that path is
+legacy nested Heimdall data.
 
 ## API Env File
 
@@ -108,7 +124,7 @@ Example `/srv/heimdall/config/api.env`:
 
 ```env
 HEIMDALL_RUNTIME_DIR=/var/lib/heimdall
-HEIMDALL_DATABASE_URL=sqlite:////var/lib/heimdall/state/heimdall.db
+HEIMDALL_DATABASE_URL=postgresql://heimdall:replace-with-a-strong-password@heimdall-postgres:5432/heimdall
 HEIMDALL_PUBLIC_BASE_URL=https://heimdall.example.com
 HEIMDALL_PREVIEW_HOST=127.0.0.1
 HEIMDALL_PREVIEW_PORT_START=18000
@@ -137,6 +153,10 @@ secret directory, and the app `DATABASE_URL` is assembled only during deploy.
 `HEIMDALL_VOLUME_ROOT_HOST` and `HEIMDALL_VOLUME_ROOT_CONTAINER` are optional
 and are required only when API logical project volumes are configured. Current
 preview containers do not receive generated project bind mounts yet.
+
+Service env bundles do not need a separate root setting. Heimdall derives the
+bundle store from `HEIMDALL_RUNTIME_DIR` as
+`/var/lib/heimdall/secrets/env-bundles` inside the API container.
 
 Use file permissions appropriate for secrets:
 
@@ -193,6 +213,29 @@ Current status:
 
 The implementation source of truth is
 [Managed Project PostgreSQL](../architecture/managed-project-postgresql.md).
+
+## Service Env Bundles
+
+Operators can upload or replace a service `.env` bundle through the API and
+Web UI. Heimdall validates normal line-oriented `.env` syntax, writes the raw
+file only under the runtime secret store, and persists only bundle metadata in
+the control database.
+
+Canonical paths:
+
+```text
+API container:
+  /var/lib/heimdall/secrets/env-bundles/projects/{project_id}/services/{service_id}/current.env
+
+VM host with product Compose defaults:
+  /srv/heimdall/runtime/secrets/env-bundles/projects/{project_id}/services/{service_id}/current.env
+```
+
+The deploy executor injects configured bundles with Docker `--env-file`.
+Deployment logs may show that a bundle is configured, the key names, and the
+checksum, but must not contain raw env values. Do not add a
+`HEIMDALL_ENV_BUNDLE_ROOT` setting; derive this storage from
+`HEIMDALL_RUNTIME_DIR`.
 
 ## Build Images
 
@@ -290,7 +333,8 @@ Back up:
 - `/srv/heimdall/runtime/state` for SQLite-backed instances, or the PostgreSQL
   data volume/backups for control PostgreSQL-backed instances
 - `/srv/heimdall/runtime/logs` when logs are part of audit history
-- `/srv/heimdall/runtime/secrets` and `/srv/heimdall/runtime/env` if used
+- `/srv/heimdall/runtime/secrets`, including service env bundles under
+  `runtime/secrets/env-bundles`
 - `/srv/heimdall/control-postgres` through Postgres-native backups or a
   coordinated stopped-volume backup when using product Compose
 - `/srv/heimdall/project-postgres` through Postgres-native backups or a

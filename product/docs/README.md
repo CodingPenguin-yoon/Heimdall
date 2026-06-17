@@ -13,9 +13,11 @@ Heimdall is a Git-based preview deployment manager. These docs are organized by 
 7. [Product Overview](product/overview.md)
 8. [Single Outer Heimdall Direction](implementation/single-outer-heimdall-direction.md)
 9. [Docker Project Volume Support Implementation Plan](implementation/docker-project-volume-support.md)
-10. [Data Model](architecture/data-model.md)
-11. [Preview Deployment Pipeline](implementation/preview-deployment-pipeline.md)
-12. [Multi-service Preview Deployment Plan](implementation/multi-service-preview.md)
+10. [Env Bundle Support Specification](implementation/env-bundle-support-spec.md)
+11. [Env Bundle Support Implementation Instructions](implementation/env-bundle-support-instructions.md)
+12. [Data Model](architecture/data-model.md)
+13. [Preview Deployment Pipeline](implementation/preview-deployment-pipeline.md)
+14. [Multi-service Preview Deployment Plan](implementation/multi-service-preview.md)
 
 ## Legacy / Deprecated
 
@@ -65,6 +67,9 @@ In scope:
   product Compose path
 - managed project PostgreSQL provisioning, deploy-time injection, retry,
   delete-orphan retention, purge, and UI lifecycle controls
+- per-service env bundle upload, replacement, deletion, metadata-only API
+  reads, secret-file storage under `runtime/secrets/env-bundles`, and
+  deploy-time Docker `--env-file` injection
 
 Out of scope:
 
@@ -72,7 +77,8 @@ Out of scope:
 - Gjallar dependency in MVP
 - remote staging VM orchestration
 - production hosting
-- raw secret storage
+- raw secret storage in the control database, API responses, UI state, or
+  deployment logs
 - generated project bind mounts until the
   [implementation plan](implementation/docker-project-volume-support.md) is
   implemented

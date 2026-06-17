@@ -77,8 +77,12 @@ def _enum_value(value: object) -> object:
     return value.value if isinstance(value, Enum) else value
 
 
-def _json_dict(value: str | None) -> dict[str, str]:
+def _json_dict(value: object) -> dict[str, str]:
+    if isinstance(value, dict):
+        return {str(key): str(item) for key, item in value.items()}
     if not value:
+        return {}
+    if not isinstance(value, str):
         return {}
     try:
         parsed = json.loads(value)
@@ -89,8 +93,12 @@ def _json_dict(value: str | None) -> dict[str, str]:
     return {str(key): str(item) for key, item in parsed.items()}
 
 
-def _json_list(value: str | None) -> list[str]:
+def _json_list(value: object) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if isinstance(item, str)]
     if not value:
+        return []
+    if not isinstance(value, str):
         return []
     try:
         parsed = json.loads(value)
@@ -287,36 +295,47 @@ def _normalize_project_payload(
         health_check_path = public_service["health_check_path"]
         health_check_url = None
     else:
-        if payload.get("services") is not None:
-            raise bad_request("services are only supported for multi_service_dockerfile deploy mode.")
-        build_context_path = validate_relative_path(
-            str(payload.get("build_context_path", existing["build_context_path"] if existing else ".")),
-            "build_context_path",
-        )
-        dockerfile_raw = payload.get("dockerfile_path", existing["dockerfile_path"] if existing else "Dockerfile")
-        if not dockerfile_raw:
-            raise bad_request("dockerfile_path is required for dockerfile deploy mode.")
-        dockerfile_path = validate_relative_path(str(dockerfile_raw), "dockerfile_path")
-        container_port_raw = payload.get("container_port", existing["container_port"] if existing else None)
-        if container_port_raw is None:
-            raise bad_request("container_port is required for dockerfile deploy mode.")
-        container_port = validate_container_port(int(container_port_raw))
-        health_check_path, health_check_url = validate_health_check(
-            payload.get("health_check_path", existing["health_check_path"] if existing else None),
-            payload.get("health_check_url", existing["health_check_url"] if existing else None),
-        )
         existing_app_service = next(
             (service for service in existing_services or [] if str(service.get("name")) == "app"),
             None,
         )
-        if "volumes" in payload and payload.get("volumes") is not None:
-            volumes = validate_service_volumes(payload.get("volumes"), "volumes")
-        elif existing_app_service:
-            volumes = validate_service_volumes(existing_app_service.get("volumes"), "volumes")
+        if payload.get("services") is not None:
+            raw_services = payload.get("services")
+            existing_services_by_name = {str(service["name"]): service for service in existing_services or []}
+            normalized_services = _normalize_service_payloads(raw_services, existing_services_by_name)
+            if len(normalized_services) != 1:
+                raise bad_request("Dockerfile deploy mode requires exactly one service.")
+            app_service = {**normalized_services[0], "name": "app", "public": True, "startup_order": 0}
+            build_context_path = str(app_service["build_context_path"])
+            dockerfile_path = str(app_service["dockerfile_path"])
+            container_port = int(app_service["container_port"])
+            health_check_path = app_service["health_check_path"]
+            health_check_url = None
+            services = [app_service]
         else:
-            volumes = []
-        services = [
-            {
+            build_context_path = validate_relative_path(
+                str(payload.get("build_context_path", existing["build_context_path"] if existing else ".")),
+                "build_context_path",
+            )
+            dockerfile_raw = payload.get("dockerfile_path", existing["dockerfile_path"] if existing else "Dockerfile")
+            if not dockerfile_raw:
+                raise bad_request("dockerfile_path is required for dockerfile deploy mode.")
+            dockerfile_path = validate_relative_path(str(dockerfile_raw), "dockerfile_path")
+            container_port_raw = payload.get("container_port", existing["container_port"] if existing else None)
+            if container_port_raw is None:
+                raise bad_request("container_port is required for dockerfile deploy mode.")
+            container_port = validate_container_port(int(container_port_raw))
+            health_check_path, health_check_url = validate_health_check(
+                payload.get("health_check_path", existing["health_check_path"] if existing else None),
+                payload.get("health_check_url", existing["health_check_url"] if existing else None),
+            )
+            if "volumes" in payload and payload.get("volumes") is not None:
+                volumes = validate_service_volumes(payload.get("volumes"), "volumes")
+            elif existing_app_service:
+                volumes = validate_service_volumes(existing_app_service.get("volumes"), "volumes")
+            else:
+                volumes = []
+            services = [{
                 "name": "app",
                 "build_context_path": build_context_path,
                 "dockerfile_path": dockerfile_path,
@@ -324,12 +343,11 @@ def _normalize_project_payload(
                 "public": True,
                 "health_check_path": health_check_path,
                 "startup_order": 0,
-                "build_env": {},
-                "runtime_env": {},
-                "required_secrets": [],
+                "build_env": _json_dict(existing_app_service.get("build_env")) if existing_app_service else {},
+                "runtime_env": _json_dict(existing_app_service.get("runtime_env")) if existing_app_service else {},
+                "required_secrets": _json_list(existing_app_service.get("required_secrets")) if existing_app_service else [],
                 "volumes": volumes,
-            }
-        ]
+            }]
     auto_deploy_enabled = payload.get("auto_deploy_enabled", existing["auto_deploy_enabled"] if existing else False)
 
     normalized = {

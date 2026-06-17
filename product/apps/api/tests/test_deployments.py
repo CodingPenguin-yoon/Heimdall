@@ -6,6 +6,7 @@ from app.config import get_settings
 from app.db import connect
 from app.services import project_database_secrets
 from app.services.executor_local_docker import ExecutorDeploymentResult, ExecutorServiceResult
+from app.services import env_bundles
 
 from .test_projects import multi_service_payload, project_payload
 
@@ -420,6 +421,113 @@ def test_real_deploy_redacts_managed_database_runtime_values_and_does_not_persis
     assert managed["password"] not in service_row["runtime_env_json"]
     assert managed["database_url"] not in release_text
     assert managed["password"] not in release_text
+
+
+def test_real_deploy_passes_env_bundle_metadata_without_values(client, monkeypatch):
+    project = create_project(client)
+    service_id = project["services"][0]["id"]
+    secret_value = "bundle-secret-value"
+    upload_response = client.post(
+        f"/api/projects/{project['id']}/services/{service_id}/env-bundle",
+        json={"content": f"API_TOKEN={secret_value}\nMODE=prod\n"},
+    )
+    assert upload_response.status_code == 201, upload_response.text
+
+    class EnvBundleExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def deploy_preview(self, request):
+            service = request.project["services"][0]
+            assert service["env_bundle"] == {
+                "active_ref": env_bundles.current_env_bundle_ref(project["id"], service_id),
+                "key_names": ["API_TOKEN", "MODE"],
+                "checksum_sha256": upload_response.json()["checksum_sha256"],
+            }
+            assert secret_value not in json.dumps(request.project)
+            return ExecutorDeploymentResult(
+                log_content="[workspace]\nok\n\n[build]\nok\n\n[container]\nok\n\n[health]\nok\n\n[summary]\nok",
+                is_dry_run=False,
+                status_message="Preview deployment completed successfully.",
+                success=True,
+                resolved_commit_sha="a" * 40,
+                image_tag="heimdall/preview-api:aaaaaaa",
+                image_id="sha256:image",
+            )
+
+    monkeypatch.setattr("app.services.deployments.RealLocalDockerExecutor", EnvBundleExecutor)
+
+    deploy_response = client.post(f"/api/projects/{project['id']}/deployments", json={"ref": "main"})
+
+    assert deploy_response.status_code == 201, deploy_response.text
+    assert secret_value not in json.dumps(deploy_response.json())
+    deployment_id = deploy_response.json()["deployment"]["id"]
+    logs_response = client.get(f"/api/deployments/{deployment_id}/logs")
+    assert secret_value not in logs_response.json()["content"]
+
+
+def test_real_deploy_rejects_env_bundle_runtime_env_key_conflict_before_executor(client, monkeypatch):
+    project = create_multi_service_project(client)
+    backend = next(service for service in project["services"] if service["name"] == "backend")
+    response = client.post(
+        f"/api/projects/{project['id']}/services/{backend['id']}/env-bundle",
+        json={"content": "PORT=secret-runtime-port\n"},
+    )
+    assert response.status_code == 201, response.text
+
+    class UnexpectedExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def deploy_preview(self, request):  # pragma: no cover - should not be reached.
+            raise AssertionError("executor should not run when env bundle conflicts with runtime_env")
+
+    monkeypatch.setattr("app.services.deployments.RealLocalDockerExecutor", UnexpectedExecutor)
+
+    deploy_response = client.post(f"/api/projects/{project['id']}/deployments", json={"ref": "main"})
+
+    assert deploy_response.status_code == 422
+    assert "conflicts with runtime_env key(s): PORT" in deploy_response.json()["detail"]
+    assert "secret-runtime-port" not in deploy_response.text
+    with connect(get_settings()) as connection:
+        deployment_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM deployments WHERE project_id = ?",
+            (project["id"],),
+        ).fetchone()["count"]
+    assert deployment_count == 0
+
+
+def test_real_deploy_rejects_env_bundle_managed_env_key_conflict_before_executor(client, monkeypatch):
+    project = create_project(client)
+    service_id = project["services"][0]["id"]
+    install_active_project_database(project["id"], password="managed-conflict-password")
+    response = client.post(
+        f"/api/projects/{project['id']}/services/{service_id}/env-bundle",
+        json={"content": "DATABASE_URL=postgres://user:bundle-secret@db/app\n"},
+    )
+    assert response.status_code == 201, response.text
+
+    class UnexpectedExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def deploy_preview(self, request):  # pragma: no cover - should not be reached.
+            raise AssertionError("executor should not run when env bundle conflicts with managed env")
+
+    monkeypatch.setattr("app.services.deployments.RealLocalDockerExecutor", UnexpectedExecutor)
+
+    deploy_response = client.post(f"/api/projects/{project['id']}/deployments", json={"ref": "main"})
+
+    assert deploy_response.status_code == 422
+    assert "conflicts with managed runtime env key(s): DATABASE_URL" in deploy_response.json()["detail"]
+    assert "bundle-secret" not in deploy_response.text
+    assert "managed-conflict-password" not in deploy_response.text
+    with connect(get_settings()) as connection:
+        deployment_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM deployments WHERE project_id = ?",
+            (project["id"],),
+        ).fetchone()["count"]
+    assert deployment_count == 0
 
 
 def test_real_deploy_rejects_reserved_managed_database_network_before_executor(client, monkeypatch):

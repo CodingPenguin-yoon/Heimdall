@@ -35,6 +35,7 @@ from .executor_local_docker import (
     redact_text,
     redaction_values_for_settings,
 )
+from . import env_bundles
 from .managed_database_runtime import apply_managed_database_runtime
 from .projects import utc_now
 
@@ -149,6 +150,44 @@ def _json_list(value: str | None) -> list[str]:
     return [str(item) for item in parsed if isinstance(item, str)]
 
 
+def _env_keys(value: object) -> set[str]:
+    if not isinstance(value, dict):
+        return set()
+    return {str(key) for key in value}
+
+
+def _bundle_key_names(service: dict[str, object]) -> set[str]:
+    bundle = service.get("env_bundle")
+    if not isinstance(bundle, dict):
+        return set()
+    key_names = bundle.get("key_names") or []
+    if not isinstance(key_names, list):
+        return set()
+    return {str(key) for key in key_names}
+
+
+def _ensure_no_env_bundle_conflicts(services: list[dict[str, object]]) -> None:
+    for service in services:
+        bundle_keys = _bundle_key_names(service)
+        if not bundle_keys:
+            continue
+        service_name = str(service.get("name") or service.get("id") or "service")
+        runtime_conflicts = sorted(bundle_keys & _env_keys(service.get("runtime_env")))
+        if runtime_conflicts:
+            joined = ", ".join(runtime_conflicts)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Env bundle for service '{service_name}' conflicts with runtime_env key(s): {joined}.",
+            )
+        managed_conflicts = sorted(bundle_keys & _env_keys(service.get("managed_runtime_env")))
+        if managed_conflicts:
+            joined = ", ".join(managed_conflicts)
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=f"Env bundle for service '{service_name}' conflicts with managed runtime env key(s): {joined}.",
+            )
+
+
 def _single_project_service(project: dict[str, object]) -> dict[str, object]:
     return {
         "id": None,
@@ -187,20 +226,29 @@ def _load_project_for_executor(
     for row in rows:
         data = row_to_dict(row)
         assert data is not None
+        service_id = str(data["id"])
+        env_bundle = env_bundles.fetch_executor_env_bundle(
+            connection,
+            project_id=str(project["id"]),
+            service_id=service_id,
+        )
+        service = {
+            "id": service_id,
+            "name": str(data["name"]),
+            "build_context_path": str(data["build_context_path"]),
+            "dockerfile_path": str(data["dockerfile_path"]),
+            "container_port": int(data["container_port"]),
+            "public": _as_bool(data["is_public"]),
+            "health_check_path": data["health_check_path"],
+            "startup_order": int(data["startup_order"]),
+            "build_env": _json_dict(data["build_env_json"]),
+            "runtime_env": _json_dict(data["runtime_env_json"]),
+            "required_secrets": _json_list(data["required_secrets_json"]),
+        }
+        if env_bundle:
+            service["env_bundle"] = env_bundle
         services.append(
-            {
-                "id": str(data["id"]),
-                "name": str(data["name"]),
-                "build_context_path": str(data["build_context_path"]),
-                "dockerfile_path": str(data["dockerfile_path"]),
-                "container_port": int(data["container_port"]),
-                "public": _as_bool(data["is_public"]),
-                "health_check_path": data["health_check_path"],
-                "startup_order": int(data["startup_order"]),
-                "build_env": _json_dict(data["build_env_json"]),
-                "runtime_env": _json_dict(data["runtime_env_json"]),
-                "required_secrets": _json_list(data["required_secrets_json"]),
-            }
+            service
         )
     if not services:
         services = [_single_project_service(project)]
@@ -214,6 +262,7 @@ def _load_project_for_executor(
             project=project,
             services=services,
         )
+    _ensure_no_env_bundle_conflicts(services)
     project.pop("run_as_heimdall_child", None)
     return {**project, "services": services}, redactions
 

@@ -31,6 +31,9 @@ Current implementation:
 - A manual deploy with `dry_run=false` performs real local Dockerfile deploys.
 - `build_env` values are passed as Docker build args. `runtime_env` values are
   passed as container environment variables.
+- Uploaded service `.env` bundles are stored as secret files under
+  `HEIMDALL_RUNTIME_DIR/secrets/env-bundles`; only metadata is stored in the
+  control database and deployments inject them with Docker `--env-file`.
 - Preview containers do not receive generated bind mounts today.
 - The API has a logical project-volume DB/read/write model; UI, YAML
   import/export, and executor bind-mount generation remain pending.
@@ -46,12 +49,12 @@ Use `/srv/heimdall` as the Heimdall root:
     api.env
   runtime/
     state/
-      heimdall.db  # SQLite default; absent for PostgreSQL-backed instances
+      heimdall.db  # SQLite only; absent for PostgreSQL-backed Compose
     logs/
       deployments/
     workspaces/
     secrets/
-    env/
+      env-bundles/
   control-postgres/  # Heimdall control DB data for the product Compose path
   project-postgres/  # project app DB data for managed project DBs
 ```
@@ -69,8 +72,8 @@ only after explicit operator confirmation.
 | `/srv/heimdall/runtime/state` | SQLite database and durable API state when SQLite is used. | `/var/lib/heimdall/state` | Back up before upgrades and deletes. For control PostgreSQL, back up the database volume or use Postgres-native backups. |
 | `/srv/heimdall/runtime/logs` | Deployment logs. | `/var/lib/heimdall/logs` | Back up if audit history matters. |
 | `/srv/heimdall/runtime/workspaces` | Git workspaces used during deployment. | `/var/lib/heimdall/workspaces` | Disposable; can be repaired by refetching repos. |
-| `/srv/heimdall/runtime/secrets` | Ignored runtime secret material when used by operators. | `/var/lib/heimdall/secrets` | Back up securely, never commit. |
-| `/srv/heimdall/runtime/env` | Runtime env files generated or managed outside repo YAML. | `/var/lib/heimdall/env` | Back up securely if it contains operational values. |
+| `/srv/heimdall/runtime/secrets` | Ignored runtime secret material, including managed DB passwords and env bundles. | `/var/lib/heimdall/secrets` | Back up securely, never commit. |
+| `/srv/heimdall/runtime/secrets/env-bundles` | Service `.env` bundles uploaded through Heimdall. | `/var/lib/heimdall/secrets/env-bundles` | Back up securely; raw env values must not be copied into the control DB, API responses, UI state, or deployment logs. |
 | `/srv/heimdall/control-postgres` | Product Compose Heimdall control Postgres data directory. | `/var/lib/postgresql/data` in `heimdall-postgres`. | Back up with Postgres-native backups or a coordinated stopped-volume backup. |
 | `/srv/heimdall/project-postgres` | Product Compose project application Postgres data directory. | `/var/lib/postgresql/data` in `project-postgres`. | Back up with Postgres-native backups or a coordinated stopped-volume backup before purge or restore work. |
 
@@ -140,7 +143,7 @@ Back up before upgrades:
 - Project PostgreSQL backups from `/srv/heimdall/project-postgres` once
   managed project databases are enabled.
 - `runtime/logs/` if audit history matters
-- `runtime/secrets/` and `runtime/env/` if used
+- `runtime/secrets/`, including `runtime/secrets/env-bundles`
 - future `project-volumes/` application data
 - existing legacy child roots only when retaining or migrating them
 

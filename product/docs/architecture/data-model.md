@@ -6,6 +6,7 @@ Current MVP foundation models:
 
 - Project
 - ProjectService
+- ProjectServiceEnvBundle
 - ProjectDatabase
 - ProjectDatabaseBinding
 - Deployment
@@ -63,6 +64,39 @@ Key fields:
 - startup order
 - build/runtime environment JSON
 - required secret names JSON
+
+## ProjectServiceEnvBundle
+
+Implemented model for service-level `.env` bundle metadata.
+
+The raw `.env` file is stored only under the runtime secret store:
+
+```text
+{settings.secrets_dir}/env-bundles/projects/{project_id}/services/{service_id}/current.env
+```
+
+The control database stores only metadata needed to find and validate the
+configured file.
+
+Key fields:
+
+- project ID
+- service ID
+- active secret-store ref
+- key names JSON
+- SHA-256 checksum
+- timestamps
+
+Forbidden fields:
+
+- raw env file content
+- raw env values
+- host-derived paths based on mutable project or service display names
+
+Deployments use the active ref to pass Docker `--env-file` for the configured
+service. If bundle keys conflict with service `runtime_env` or managed runtime
+env such as a generated `DATABASE_URL`, deployment fails before containers are
+started.
 
 ## ProjectDatabase
 

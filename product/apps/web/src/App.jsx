@@ -186,18 +186,21 @@ function serviceHasManagedDatabaseSecret(service, envVar) {
   return parseSecretNames(service.required_secrets_text).includes(envVar);
 }
 
-function looksSecretLike(key, value) {
-  const keyPattern = /(^|_)(SECRET|TOKEN|PASSWORD|PASSWD|PRIVATE_KEY|API_KEY|ACCESS_KEY|JWT|DATABASE_URL|DB_PASSWORD|CREDENTIAL)(_|$)/i;
-  const valuePattern = /(-----BEGIN|bearer\s+|secret|token|password|passwd|private[_ -]?key|api[_ -]?key|:\/\/[^/\s:@]+:[^@\s]+@)/i;
-  return keyPattern.test(key) || valuePattern.test(value);
+function setServiceManagedDatabaseBinding(service, envVar, bound, previousEnvVar = null) {
+  const secrets = parseSecretNames(service.required_secrets_text).filter(
+    (secret) => secret !== envVar && (!previousEnvVar || secret !== previousEnvVar),
+  );
+  if (bound) secrets.push(envVar);
+  return {
+    ...service,
+    required_secrets_text: secrets.join("\n"),
+  };
 }
 
-function yamlMapLines(map, indent) {
-  const entries = Object.entries(map);
-  return entries.map(([key, value]) => {
-    const safeValue = looksSecretLike(key, value) ? "[redacted]" : value;
-    return `${" ".repeat(indent)}${key}: ${yamlScalar(safeValue)}`;
-  });
+function serviceHasDatabaseBinding(project, service) {
+  if (!project?.database || !service) return false;
+  if (project.deploy_mode === "dockerfile" && service.name === "app") return true;
+  return service.required_secrets?.includes(project.database.env_var);
 }
 
 function servicePayload(service) {
@@ -213,6 +216,37 @@ function servicePayload(service) {
     runtime_env: parseKeyValueLines(service.runtime_env_text),
     required_secrets: parseSecretNames(service.required_secrets_text),
   };
+}
+
+function collectEnvBundleFiles(formElement, services) {
+  const formData = new FormData(formElement);
+  const deployMode = deployModeForServices(services);
+  return services
+    .map((service) => {
+      const file = formData.get(`env_bundle_file_${service.form_key}`);
+      if (!(file instanceof File) || !file.name) return null;
+      return {
+        serviceName: deployMode === "dockerfile" ? "app" : service.name,
+        file,
+      };
+    })
+    .filter(Boolean);
+}
+
+async function uploadEnvBundleFiles(project, uploads) {
+  if (!uploads.length) return 0;
+  let uploadedCount = 0;
+  for (const upload of uploads) {
+    const service =
+      project.services?.find((item) => item.name === upload.serviceName) ||
+      (project.services?.length === 1 ? project.services[0] : null);
+    if (!service?.id) continue;
+    const formData = new FormData();
+    formData.append("file", upload.file);
+    await api.upsertServiceEnvBundle(project.id, service.id, formData);
+    uploadedCount += 1;
+  }
+  return uploadedCount;
 }
 
 function envMapToText(values) {
@@ -316,6 +350,14 @@ function projectPayloadFromForm(formState, existingProject = null) {
     dockerfile_path: previewService.dockerfile_path,
     container_port: Number(previewService.container_port),
     health_check_path: previewService.health_check_path || "/",
+    services: [
+      servicePayload({
+        ...previewService,
+        name: "app",
+        public: true,
+        startup_order: "0",
+      }),
+    ],
   };
 }
 
@@ -347,9 +389,6 @@ function buildProjectYaml(formState) {
   }
   lines.push("", "services:");
   services.forEach((service, index) => {
-    const buildEnv = parseKeyValueLines(service.build_env_text);
-    const runtimeEnv = parseKeyValueLines(service.runtime_env_text);
-    const requiredSecrets = parseSecretNames(service.required_secrets_text);
     lines.push(
       `  ${yamlScalar(service.name, `service-${index + 1}`)}:`,
       `    build_context_path: ${yamlScalar(service.build_context_path, ".")}`,
@@ -359,22 +398,6 @@ function buildProjectYaml(formState) {
       `    health_check_path: ${yamlScalar(service.health_check_path, "/")}`,
       `    startup_order: ${yamlNumber(service.startup_order, 0)}`,
     );
-    if (Object.keys(buildEnv).length) {
-      lines.push("    build_env:", ...yamlMapLines(buildEnv, 6));
-    } else {
-      lines.push("    build_env: {}");
-    }
-    if (Object.keys(runtimeEnv).length) {
-      lines.push("    runtime_env:", ...yamlMapLines(runtimeEnv, 6));
-    } else {
-      lines.push("    runtime_env: {}");
-    }
-    if (requiredSecrets.length) {
-      lines.push("    required_secrets:");
-      requiredSecrets.forEach((secret) => lines.push(`      - ${yamlScalar(secret)}`));
-    } else {
-      lines.push("    required_secrets: []");
-    }
   });
   return lines.join("\n");
 }
@@ -384,6 +407,7 @@ function App() {
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
   const [projectDetail, setProjectDetail] = useState(null);
+  const [envBundles, setEnvBundles] = useState({});
   const [deployments, setDeployments] = useState([]);
   const [releases, setReleases] = useState([]);
   const [selectedDeploymentId, setSelectedDeploymentId] = useState(null);
@@ -424,7 +448,22 @@ function App() {
       setRepoValidation(null);
       setRepoValidationError("");
     }
-    setForm((current) => ({ ...current, [field]: value }));
+    setForm((current) => {
+      if (field === "database_env_var") {
+        const previousEnvVar = managedDatabaseIntent(current).env_var;
+        const nextEnvVar = String(value || "DATABASE_URL").trim() || "DATABASE_URL";
+        return {
+          ...current,
+          [field]: value,
+          services: current.services.map((service) =>
+            serviceHasManagedDatabaseSecret(service, previousEnvVar)
+              ? setServiceManagedDatabaseBinding(service, nextEnvVar, true, previousEnvVar)
+              : service,
+          ),
+        };
+      }
+      return { ...current, [field]: value };
+    });
   }
 
   function updateService(index, field, value) {
@@ -435,6 +474,18 @@ function App() {
         return { ...service, [field]: value };
       }),
     }));
+  }
+
+  function updateServiceDatabaseBinding(index, bound) {
+    setForm((current) => {
+      const envVar = managedDatabaseIntent(current).env_var;
+      return {
+        ...current,
+        services: current.services.map((service, serviceIndex) =>
+          serviceIndex === index ? setServiceManagedDatabaseBinding(service, envVar, bound) : service,
+        ),
+      };
+    });
   }
 
   function addService() {
@@ -492,6 +543,7 @@ function App() {
 
   function clearProjectRuntimeState() {
     setProjectDetail(null);
+    setEnvBundles({});
     setDeployments([]);
     setReleases([]);
     setSelectedDeploymentId(null);
@@ -531,12 +583,18 @@ function App() {
       api.listProjectDeployments(projectId),
       api.listReleases(projectId),
     ]);
-    return { detail, projectDeployments, projectReleases };
+    const bundleEntries = await Promise.all(
+      (detail.services || [])
+        .filter((service) => service.id)
+        .map(async (service) => [service.id, await api.getServiceEnvBundle(projectId, service.id)]),
+    );
+    return { detail, projectDeployments, projectReleases, envBundles: Object.fromEntries(bundleEntries) };
   }
 
   function applyProjectBundle(bundle) {
     if (!bundle) return;
     setProjectDetail(bundle.detail);
+    setEnvBundles(bundle.envBundles || {});
     setDeployments(bundle.projectDeployments);
     setReleases(bundle.projectReleases);
     if (bundle.projectDeployments.length) {
@@ -606,6 +664,9 @@ function App() {
 
   async function handleSaveProject(event) {
     event.preventDefault();
+    const formElement = event.currentTarget;
+    const services = ensurePreviewEntry(form.services);
+    const envBundleUploads = collectEnvBundleFiles(formElement, services);
     setError("");
     setActivity(isEditingProject ? "Saving project..." : "Creating project...");
     try {
@@ -613,11 +674,16 @@ function App() {
       const saved = isEditingProject
         ? await api.updateProject(editingProjectId, payload)
         : await api.createProject(payload);
+      const uploadedBundleCount = await uploadEnvBundleFiles(saved, envBundleUploads);
       resetProjectForm();
       await refreshProjects(saved.id);
       await loadProject(saved.id);
       setActiveTab("Projects");
-      setActivity(`${isEditingProject ? "Saved" : "Created"} ${saved.name}.`);
+      setActivity(
+        `${isEditingProject ? "Saved" : "Created"} ${saved.name}${
+          uploadedBundleCount ? ` with ${uploadedBundleCount} env bundle file(s)` : ""
+        }.`,
+      );
     } catch (caughtError) {
       setError(caughtError.message);
       setActivity("");
@@ -653,6 +719,45 @@ function App() {
       await refreshProjects(project.id);
       await loadProject(project.id);
       setActivity(`Managed PostgreSQL status is ${databaseStatusLabel(database.status)}.`);
+    } catch (caughtError) {
+      setError(caughtError.message);
+      setActivity("");
+    }
+  }
+
+  async function handleUpsertEnvBundle(project, service, event) {
+    event.preventDefault();
+    if (!project?.id || !service?.id) return;
+    const formData = new FormData(event.currentTarget);
+    const file = formData.get("file");
+    if (!(file instanceof File) || !file.name) {
+      setError("Choose an env file to upload.");
+      return;
+    }
+    setError("");
+    setActivity(`Uploading ${file.name} for ${service.name}...`);
+    try {
+      const bundle = await api.upsertServiceEnvBundle(project.id, service.id, formData);
+      event.currentTarget.reset();
+      await refreshProjects(project.id);
+      await loadProject(project.id);
+      setActivity(`Env bundle for ${service.name} has ${bundle.key_names.length} key(s).`);
+    } catch (caughtError) {
+      setError(caughtError.message);
+      setActivity("");
+    }
+  }
+
+  async function handleDeleteEnvBundle(project, service) {
+    if (!project?.id || !service?.id) return;
+    if (!window.confirm(`Delete env bundle for ${service.name}?`)) return;
+    setError("");
+    setActivity(`Deleting env bundle for ${service.name}...`);
+    try {
+      await api.deleteServiceEnvBundle(project.id, service.id);
+      await refreshProjects(project.id);
+      await loadProject(project.id);
+      setActivity(`Env bundle for ${service.name} deleted.`);
     } catch (caughtError) {
       setError(caughtError.message);
       setActivity("");
@@ -1133,12 +1238,10 @@ function App() {
                                 <td>
                                   <span
                                     className={`badge tone-${
-                                      service.required_secrets?.includes(selectedProject.database.env_var)
-                                        ? "success"
-                                        : "neutral"
+                                      serviceHasDatabaseBinding(selectedProject, service) ? "success" : "neutral"
                                     }`}
                                   >
-                                    {service.required_secrets?.includes(selectedProject.database.env_var)
+                                    {serviceHasDatabaseBinding(selectedProject, service)
                                       ? `${selectedProject.database.env_var} bound`
                                       : "not bound"}
                                   </span>
@@ -1148,6 +1251,69 @@ function App() {
                           ))}
                         </tbody>
                       </table>
+                    </div>
+                  ) : null}
+
+                  {selectedProject.services?.length ? (
+                    <div className="env-bundle-list">
+                      {selectedProject.services.map((service) => {
+                        const bundle = service.id ? envBundles[service.id] : null;
+                        const configured = Boolean(bundle?.configured);
+                        return (
+                          <form
+                            key={service.id || service.name}
+                            className="env-bundle-panel"
+                            onSubmit={(event) => handleUpsertEnvBundle(selectedProject, service, event)}
+                          >
+                            <div className="env-bundle-header">
+                              <div>
+                                <span className="muted">Env Bundle</span>
+                                <strong className="mono">{service.name}</strong>
+                              </div>
+                              <span className={`badge tone-${configured ? "success" : "neutral"}`}>
+                                {configured ? "configured" : "not configured"}
+                              </span>
+                            </div>
+                            <div className="env-bundle-meta">
+                              <div>
+                                <span className="muted">Keys</span>
+                                <strong className="mono">
+                                  {bundle?.key_names?.length ? bundle.key_names.join(", ") : "-"}
+                                </strong>
+                              </div>
+                              <div>
+                                <span className="muted">Checksum</span>
+                                <strong className="mono">{bundle?.checksum_sha256 || "-"}</strong>
+                              </div>
+                              <div>
+                                <span className="muted">Updated</span>
+                                <strong>{formatDate(bundle?.updated_at)}</strong>
+                              </div>
+                            </div>
+                            <label className="file-field">
+                              <span>Env file</span>
+                              <input
+                                type="file"
+                                name="file"
+                                required
+                              />
+                            </label>
+                            <div className="button-row">
+                              <button type="submit" className="primary-button" disabled={!service.id}>
+                                Upload / replace
+                              </button>
+                              <button
+                                type="button"
+                                className="danger-button"
+                                disabled={!service.id || !configured}
+                                onClick={() => handleDeleteEnvBundle(selectedProject, service)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </form>
+                        );
+                      })}
                     </div>
                   ) : null}
 
@@ -1534,39 +1700,13 @@ function App() {
                         />
                       </label>
                     </div>
-                    {form.services.length > 1 ? (
-                      <>
-                        <div className="split-fields">
-                          <label>
-                            <span>Build env</span>
-                            <textarea
-                              value={service.build_env_text}
-                              onChange={(event) => updateService(index, "build_env_text", event.target.value)}
-                              rows="3"
-                              placeholder="VITE_API_BASE_URL=/api"
-                            />
-                          </label>
-                          <label>
-                            <span>Runtime env</span>
-                            <textarea
-                              value={service.runtime_env_text}
-                              onChange={(event) => updateService(index, "runtime_env_text", event.target.value)}
-                              rows="3"
-                              placeholder="PORT=8000"
-                            />
-                          </label>
-                        </div>
-                        <label>
-                          <span>Required secret names</span>
-                          <textarea
-                            value={service.required_secrets_text}
-                            onChange={(event) => updateService(index, "required_secrets_text", event.target.value)}
-                            rows="2"
-                            placeholder="DATABASE_URL"
-                          />
-                        </label>
-                      </>
-                    ) : null}
+                    <label className="file-field">
+                      <span>Env bundle file</span>
+                      <input
+                        type="file"
+                        name={`env_bundle_file_${service.form_key}`}
+                      />
+                    </label>
                     <div className="button-row">
                       <button type="button" disabled={form.services.length <= 1} onClick={() => removeService(index)}>
                         Remove service
@@ -1636,15 +1776,22 @@ function App() {
                     </div>
                     {form.services.length > 1 ? (
                       <div className="database-binding-list">
-                        {form.services.map((service) => {
+                        {form.services.map((service, serviceIndex) => {
                           const isBound = serviceHasManagedDatabaseSecret(service, managedDatabaseIntent(form).env_var);
                           return (
-                            <span
+                            <label
                               key={service.form_key || service.name}
-                              className={`badge tone-${isBound ? "success" : "neutral"}`}
+                              className="switch-line database-binding-item"
                             >
-                              {service.name || "service"}: {isBound ? "DB env bound" : "not bound"}
-                            </span>
+                              <input
+                                type="checkbox"
+                                checked={isBound}
+                                onChange={(event) =>
+                                  updateServiceDatabaseBinding(serviceIndex, event.target.checked)
+                                }
+                              />
+                              <span>{service.name || "service"} DB env</span>
+                            </label>
                           );
                         })}
                       </div>

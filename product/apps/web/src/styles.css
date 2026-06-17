@@ -351,19 +351,23 @@ tbody tr.is-selected {
 
 .database-panel,
 .database-form-block,
-.database-binding-list {
+.database-binding-list,
+.env-bundle-list,
+.env-bundle-panel {
   display: grid;
   gap: 0.6rem;
 }
 
-.database-panel {
+.database-panel,
+.env-bundle-panel {
   padding: 0.72rem;
   border: 1px solid #e0e5ea;
   border-radius: 8px;
   background: #fbfcfd;
 }
 
-.database-panel-header {
+.database-panel-header,
+.env-bundle-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -371,14 +375,38 @@ tbody tr.is-selected {
   flex-wrap: wrap;
 }
 
-.database-panel-header > div:first-child {
+.database-panel-header > div:first-child,
+.env-bundle-header > div:first-child {
   display: grid;
   gap: 0.22rem;
 }
 
+.env-bundle-meta {
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.4fr) minmax(0, 0.8fr);
+}
+
+.env-bundle-meta div {
+  display: grid;
+  gap: 0.22rem;
+  min-width: 0;
+  padding: 0.52rem 0.6rem;
+  border: 1px solid #e0e5ea;
+  border-radius: 8px;
+  background: #f9fbfc;
+}
+
 .database-binding-list {
   align-items: start;
-  grid-template-columns: repeat(auto-fit, minmax(9rem, max-content));
+  grid-template-columns: repeat(auto-fit, minmax(10rem, max-content));
+}
+
+.database-binding-item {
+  padding: 0.42rem 0.55rem;
+  border: 1px solid #d8dee5;
+  border-radius: 6px;
+  background: #ffffff;
 }
 
 .readiness-grid small {
@@ -667,6 +695,10 @@ tbody tr.is-selected {
   min-height: 0;
 }
 
+.file-field input[type="file"] {
+  padding: 0.42rem 0.5rem;
+}
+
 .mono {
   font-family: "SFMono-Regular", Monaco, Consolas, monospace;
 }
@@ -731,6 +763,7 @@ tbody tr.is-selected {
   .validation-result,
   .readiness-grid,
   .database-meta-grid,
+  .env-bundle-meta,
   .stats-grid {
     grid-template-columns: 1fr;
   }

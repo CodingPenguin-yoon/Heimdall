@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.config import Settings
+from app.services import env_bundles
 from app.services.executor_local_docker import (
     CommandResult,
     ExecutorDeploymentRequest,
@@ -386,6 +387,145 @@ def test_single_service_executor_injects_managed_database_env_and_network_with_r
     assert password not in result.log_content
     assert encoded_password not in result.log_content
     assert "[redacted]" in result.log_content
+
+
+def test_single_service_executor_uses_env_bundle_file_without_logging_values(tmp_path):
+    settings = make_settings(tmp_path)
+    parsed = env_bundles.store_env_bundle_file(
+        settings,
+        project_id="project-1",
+        service_id="service-app",
+        bundle_id="envbundle_one",
+        content="API_TOKEN=super-secret-token\nMODE=prod\n",
+    )
+    project = make_project(
+        services=[
+            {
+                "id": "service-app",
+                "name": "app",
+                "env_bundle": {
+                    "active_ref": env_bundles.current_env_bundle_ref("project-1", "service-app"),
+                    "key_names": parsed.key_names,
+                    "checksum_sha256": parsed.checksum_sha256,
+                },
+            }
+        ]
+    )
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is True
+    docker_run = find_call(runner.calls, "run")
+    env_file = docker_run[docker_run.index("--env-file") + 1]
+    assert env_file.endswith("/secrets/env-bundles/projects/project-1/services/service-app/current.env")
+    assert Path(env_file).read_text(encoding="utf-8") == "API_TOKEN=super-secret-token\nMODE=prod\n"
+    assert "API_TOKEN" in result.log_content
+    assert parsed.checksum_sha256 in result.log_content
+    assert "super-secret-token" not in result.log_content
+    assert "API_TOKEN=super-secret-token" not in " ".join(docker_run)
+
+
+def test_executor_rejects_env_bundle_runtime_env_key_conflict_before_container_creation(tmp_path):
+    settings = make_settings(tmp_path)
+    project = make_multi_service_project()
+    project["services"][0]["env_bundle"] = {
+        "active_ref": env_bundles.current_env_bundle_ref("project-1", "service-backend"),
+        "key_names": ["PORT"],
+        "checksum_sha256": "a" * 64,
+    }
+    prepare_existing_multi_service_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is False
+    assert "conflicts with runtime_env key(s): PORT" in result.status_message
+    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
+
+
+def test_executor_rejects_env_bundle_managed_runtime_env_key_conflict_before_container_creation(tmp_path):
+    settings = make_settings(tmp_path)
+    project = make_project(
+        services=[
+            {
+                "id": "service-app",
+                "name": "app",
+                "managed_runtime_env": {"DATABASE_URL": "postgresql://role:password@project-postgres:5432/db"},
+                "env_bundle": {
+                    "active_ref": env_bundles.current_env_bundle_ref("project-1", "service-app"),
+                    "key_names": ["DATABASE_URL"],
+                    "checksum_sha256": "b" * 64,
+                },
+            }
+        ]
+    )
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is False
+    assert "conflicts with managed runtime env key(s): DATABASE_URL" in result.status_message
+    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
+
+
+def test_executor_rejects_missing_configured_env_bundle_file(tmp_path):
+    settings = make_settings(tmp_path)
+    project = make_project(
+        services=[
+            {
+                "id": "service-app",
+                "name": "app",
+                "env_bundle": {
+                    "active_ref": env_bundles.current_env_bundle_ref("project-1", "service-app"),
+                    "key_names": ["API_TOKEN"],
+                    "checksum_sha256": "c" * 64,
+                },
+            }
+        ]
+    )
+    prepare_existing_repo(settings, project)
+    runner = RecordingRunner()
+    executor = RealLocalDockerExecutor(
+        settings=settings,
+        runner=runner,
+        health_client=StaticHealthClient(200),
+        sleep=lambda _: None,
+        health_timeout_seconds=0,
+        health_interval_seconds=0,
+    )
+
+    result = executor.deploy_preview(make_request(project))
+
+    assert result.success is False
+    assert "Configured env bundle file is missing" in result.status_message
+    assert not any(call[:3] == ["docker", "run", "-d"] for call in runner.calls)
 
 
 def test_single_service_executor_can_use_distinct_preview_health_host(tmp_path):

@@ -149,7 +149,24 @@ class ProjectServiceConfig(BaseModel):
 class ProjectServiceRead(ProjectServiceConfig):
     model_config = ConfigDict(extra="ignore")
 
+    id: Optional[str] = None
     volumes: list[ProjectServiceVolumeRead] = Field(default_factory=list)
+
+
+class ProjectServiceEnvBundleWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str
+
+
+class ProjectServiceEnvBundleRead(BaseModel):
+    id: Optional[str] = None
+    project_id: str
+    service_id: str
+    configured: bool
+    key_names: list[str] = Field(default_factory=list)
+    checksum_sha256: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 class ProjectDatabaseRead(BaseModel):

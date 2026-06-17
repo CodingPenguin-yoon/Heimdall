@@ -17,6 +17,8 @@ import httpx
 
 from ..config import Settings, get_settings
 from ..models import DeployMode, Provider
+from . import env_bundles
+from . import project_database_secrets
 
 
 COMMIT_SHA_RE = re.compile(r"^[0-9a-fA-F]{7,64}$")
@@ -249,6 +251,48 @@ def _managed_runtime_env(service: dict[str, object]) -> dict[str, str]:
     if not isinstance(managed_env, dict):
         return {}
     return {str(key): str(value) for key, value in managed_env.items()}
+
+
+def _runtime_env(service: dict[str, object]) -> dict[str, str]:
+    runtime_env = service.get("runtime_env") or {}
+    if not isinstance(runtime_env, dict):
+        return {}
+    return {str(key): str(value) for key, value in runtime_env.items()}
+
+
+def _env_bundle_metadata(service: dict[str, object]) -> dict[str, object] | None:
+    bundle = service.get("env_bundle")
+    return bundle if isinstance(bundle, dict) else None
+
+
+def _env_bundle_key_names(service: dict[str, object]) -> list[str]:
+    bundle = _env_bundle_metadata(service)
+    if not bundle:
+        return []
+    key_names = bundle.get("key_names") or []
+    if not isinstance(key_names, list):
+        return []
+    return [str(key) for key in key_names]
+
+
+def _ensure_env_bundle_has_no_conflicts(service: dict[str, object], service_name: str) -> None:
+    bundle_keys = set(_env_bundle_key_names(service))
+    if not bundle_keys:
+        return
+
+    runtime_conflicts = sorted(bundle_keys & set(_runtime_env(service)))
+    if runtime_conflicts:
+        joined = ", ".join(runtime_conflicts)
+        raise ExecutorStepError(
+            f"Container failed for {service_name}: env bundle conflicts with runtime_env key(s): {joined}."
+        )
+
+    managed_conflicts = sorted(bundle_keys & set(_managed_runtime_env(service)))
+    if managed_conflicts:
+        joined = ", ".join(managed_conflicts)
+        raise ExecutorStepError(
+            f"Container failed for {service_name}: env bundle conflicts with managed runtime env key(s): {joined}."
+        )
 
 
 def _managed_database_network(service: dict[str, object]) -> str | None:
@@ -674,6 +718,31 @@ class RealLocalDockerExecutor:
     def _project_network_name(self, project: dict[str, object]) -> str:
         return f"heimdall-preview-{project['slug']}"
 
+    def _env_bundle_path_for_service(
+        self,
+        service: dict[str, object],
+        service_name: str,
+        log: SectionedLog,
+    ) -> Path | None:
+        bundle = _env_bundle_metadata(service)
+        if not bundle:
+            return None
+        _ensure_env_bundle_has_no_conflicts(service, service_name)
+        active_ref = str(bundle.get("active_ref") or "")
+        try:
+            bundle_path = env_bundles.resolve_existing_env_bundle_path(self.settings, active_ref)
+        except (env_bundles.EnvBundleError, project_database_secrets.SecretRefError) as exc:
+            raise ExecutorStepError(f"Container failed for {service_name}: {exc}") from exc
+
+        key_names = _env_bundle_key_names(service)
+        log.add(f"{_now()} env bundle configured with {len(key_names)} key(s)")
+        if key_names:
+            log.add(f"{_now()} env bundle keys: {', '.join(key_names)}")
+        checksum = bundle.get("checksum_sha256")
+        if checksum:
+            log.add(f"{_now()} env bundle checksum: {checksum}")
+        return bundle_path
+
     def _ensure_project_network(
         self,
         project: dict[str, object],
@@ -742,6 +811,7 @@ class RealLocalDockerExecutor:
         project = request.project
         project_id = str(project["id"])
         service_name = str(service["name"])
+        env_bundle_path = self._env_bundle_path_for_service(service, service_name, log)
         existing_containers = self._managed_container_ids(project_id, log, redactions, service_name=service_name)
         preview_unavailable = False
         if existing_containers:
@@ -785,10 +855,10 @@ class RealLocalDockerExecutor:
         database_network = _managed_database_network(service)
         if database_network:
             docker_run.extend(["--network", database_network])
-        runtime_env = service.get("runtime_env") or {}
-        if isinstance(runtime_env, dict):
-            for key in sorted(runtime_env):
-                docker_run.extend(["--env", f"{key}={runtime_env[key]}"])
+        if env_bundle_path is not None:
+            docker_run.extend(["--env-file", str(env_bundle_path)])
+        for key, value in sorted(_runtime_env(service).items()):
+            docker_run.extend(["--env", f"{key}={value}"])
         for key, value in sorted(_managed_runtime_env(service).items()):
             docker_run.extend(["--env", f"{key}={value}"])
         if bool(service["public"]):
@@ -815,6 +885,9 @@ class RealLocalDockerExecutor:
     ) -> bool:
         project = request.project
         project_id = str(project["id"])
+        services = _project_services(project)
+        service = services[0] if services else {}
+        env_bundle_path = self._env_bundle_path_for_service(service, "app", log) if service else None
         existing_containers = self._managed_container_ids(project_id, log, redactions)
         preview_unavailable = False
         if existing_containers:
@@ -839,8 +912,6 @@ class RealLocalDockerExecutor:
 
         container_name = f"heimdall-preview-{project['slug']}"
         port_mapping = f"{project['preview_host']}:{project['preview_port']}:{project['container_port']}"
-        services = _project_services(project)
-        service = services[0] if services else {}
         database_network = _managed_database_network(service)
         docker_run = [
             "docker",
@@ -863,6 +934,8 @@ class RealLocalDockerExecutor:
             port_mapping,
             ]
         )
+        if env_bundle_path is not None:
+            docker_run.extend(["--env-file", str(env_bundle_path)])
         for key, value in sorted(_managed_runtime_env(service).items()):
             docker_run.extend(["--env", f"{key}={value}"])
         docker_run.append(image_tag)

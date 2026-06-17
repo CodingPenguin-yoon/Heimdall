@@ -105,6 +105,21 @@ SCHEMA_STATEMENTS = [
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS project_service_env_bundles (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        active_ref TEXT NOT NULL,
+        key_names_json TEXT NOT NULL DEFAULT '[]',
+        checksum_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(project_id, service_id),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(service_id) REFERENCES project_services(id) ON DELETE CASCADE
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS project_service_volumes (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -345,6 +360,21 @@ POSTGRES_SCHEMA_STATEMENTS = [
         CONSTRAINT project_database_bindings_project_service_env_unique UNIQUE(project_id, service_id, env_var_name),
         FOREIGN KEY(project_database_id) REFERENCES project_databases(id) ON DELETE CASCADE,
         FOREIGN KEY(service_id) REFERENCES project_services(id) ON DELETE SET NULL
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS project_service_env_bundles (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        service_id TEXT NOT NULL,
+        active_ref TEXT NOT NULL,
+        key_names_json TEXT NOT NULL DEFAULT '[]',
+        checksum_sha256 TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CONSTRAINT project_service_env_bundles_project_service_unique UNIQUE(project_id, service_id),
+        FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE,
+        FOREIGN KEY(service_id) REFERENCES project_services(id) ON DELETE CASCADE
     )
     """,
     """
