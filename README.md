@@ -1,9 +1,7 @@
-# Heimdall
+# Heimdall (Superseded)
 
-Heimdall is a Git-based preview deployment manager.
+> [!IMPORTANT]
+> Active development has moved to [CodingPenguin-yoon/heimdall_final](https://github.com/CodingPenguin-yoon/heimdall_final).
+> Use the active repository for the current product scope, setup instructions, documentation, and issue tracking.
 
-- `product/` contains the current implementation.
-- Gjallar owns VM and Proxmox lifecycle.
-- Heimdall owns Git repo integration, local preview deployment, Docker release history, logs, and rollback.
-
-The repository root keeps governance and shared repo configuration only.
+This repository preserves an earlier Heimdall implementation and is no longer maintained.
